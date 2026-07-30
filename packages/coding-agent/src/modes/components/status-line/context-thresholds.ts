@@ -56,20 +56,48 @@ export function getContextUsageLevel(contextPercent: number, contextWindow: numb
 }
 
 /**
- * Format context usage as `<percent>%/<window>` when the model window is known.
- * Unknown windows render as `<tokens>/?`, because `0.0%/0` suggests a real
- * empty context instead of missing provider metadata.
+ * Format context usage. When `format` is provided, it is treated as a format
+ * template with percent escapes: `%t` = used tokens, `%p` = percent used,
+ * `%w` = window size, `%%` = literal `%`. Unknown escapes pass through.
+ *
+ * Without a format, renders `<percent>%/<window>` when the window is known,
+ * or `<tokens>/?` when it is not (avoids `0.0%/0` looking like real empty
+ * context instead of missing provider metadata).
  */
 export function formatContextUsage(
 	contextPercent: number | null | undefined,
 	contextWindow: number,
 	usedTokens?: number,
+	format?: string,
 ): string {
-	if (!Number.isFinite(contextWindow) || contextWindow <= 0) {
-		return `${formatNumber(usedTokens ?? 0)}/?`;
+	if (typeof format !== "string" || format.length === 0) {
+		if (!Number.isFinite(contextWindow) || contextWindow <= 0) {
+			return `${formatNumber(usedTokens ?? 0)}/?`;
+		}
+		const pct = contextPercent === null || contextPercent === undefined ? "?" : `${contextPercent.toFixed(1)}%`;
+		return `${pct}/${formatNumber(contextWindow)}`;
 	}
+
 	const pct = contextPercent === null || contextPercent === undefined ? "?" : `${contextPercent.toFixed(1)}%`;
-	return `${pct}/${formatNumber(contextWindow)}`;
+	const tokens = usedTokens !== undefined ? formatNumber(usedTokens) : "?";
+	const window = Number.isFinite(contextWindow) && contextWindow > 0 ? formatNumber(contextWindow) : "?";
+
+	// Single-pass regex replacement to prevent `%p` output from being reinterpreted
+	// by later escapes (e.g. `%pw` should render as `50.0%w`, not `50.01M`).
+	return format.replace(/%(?:%|[tpw])/g, match => {
+		switch (match) {
+			case "%%":
+				return "%";
+			case "%t":
+				return tokens;
+			case "%p":
+				return pct;
+			case "%w":
+				return window;
+			default:
+				return match;
+		}
+	});
 }
 
 export function getContextUsageThemeColor(level: ContextUsageLevel): ThemeColor {
