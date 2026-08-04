@@ -349,7 +349,7 @@ describe("createAgentSession session storage isolation", () => {
 			await session.dispose();
 		}
 	});
-	it("loads obfuscator only when secrets exist", async () => {
+	it("loads configured secrets per session alongside built-in credential redaction", async () => {
 		await withClearedSecretEnv(async () => {
 			const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-secrets-${Snowflake.next()}-`));
 			tempDirs.push(tempDir);
@@ -370,6 +370,7 @@ describe("createAgentSession session storage isolation", () => {
 				enableMCP: false,
 				enableLsp: false,
 			};
+			const configuredSecret = "sdk-secret-token-123456";
 
 			const existingKeySpy = spyOn(secrets, "getExistingSecretPlaceholderKey").mockImplementation(
 				async () => undefined,
@@ -377,7 +378,9 @@ describe("createAgentSession session storage isolation", () => {
 			try {
 				const withoutSecrets = await createAgentSession(commonOptions);
 				try {
-					expect(withoutSecrets.session.obfuscator?.hasSecrets()).toBeFalsy();
+					const obfuscator = withoutSecrets.session.obfuscator;
+					expect(obfuscator?.hasSecrets()).toBe(true);
+					expect(obfuscator?.obfuscate(configuredSecret)).toBe(configuredSecret);
 				} finally {
 					await withoutSecrets.session.dispose();
 				}
@@ -386,11 +389,13 @@ describe("createAgentSession session storage isolation", () => {
 			}
 
 			fs.mkdirSync(path.join(cwd, ".omp"), { recursive: true });
-			fs.writeFileSync(path.join(cwd, ".omp", "secrets.yml"), "- type: plain\n  content: sdk-secret-token-123456\n");
+			fs.writeFileSync(path.join(cwd, ".omp", "secrets.yml"), `- type: plain\n  content: ${configuredSecret}\n`);
 
 			const withSecrets = await createAgentSession(commonOptions);
 			try {
-				expect(withSecrets.session.obfuscator?.hasSecrets()).toBe(true);
+				const obfuscator = withSecrets.session.obfuscator;
+				expect(obfuscator?.hasSecrets()).toBe(true);
+				expect(obfuscator?.obfuscate(configuredSecret)).not.toContain(configuredSecret);
 			} finally {
 				await withSecrets.session.dispose();
 			}

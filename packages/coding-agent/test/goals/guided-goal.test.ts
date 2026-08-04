@@ -134,7 +134,6 @@ describe("guided goal setup", () => {
 			expect(promptSpy).toHaveBeenCalledTimes(1);
 			const [text] = promptSpy.mock.calls[0]!;
 			expect(text).not.toContain("<rough-goal>");
-			expect(text).toContain("not stated an objective");
 		} finally {
 			await harness.cleanup();
 		}

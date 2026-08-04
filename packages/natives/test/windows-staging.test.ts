@@ -26,6 +26,7 @@ import * as path from "node:path";
 import {
 	cleanupStaleNativeVersions,
 	getAddonFilenames,
+	initLoaderContext,
 	resolveLoaderCandidates,
 	shouldStageNodeModulesAddon,
 } from "../native/loader-state.js";
@@ -112,6 +113,62 @@ describe("windows native addon staging", () => {
 		// addon anyway).
 		const userDataBaseline = path.join(userDataDir, "pi_natives.win32-x64-baseline.node");
 		expect(candidates).not.toContain(userDataBaseline);
+	});
+
+	it("classifies only Windows node_modules paths case-insensitively", () => {
+		const leafPackageDir = "/tmp/node_modules/@oh-my-pi/pi-natives-darwin-arm64";
+		const uppercaseNodeModulesNativeDir = "/tmp/NODE_MODULES/@oh-my-pi/pi-natives/native";
+		const variantCacheKey = "__PI_NATIVE_VARIANT_CACHE";
+		const previousVariantCache = process.env[variantCacheKey];
+		try {
+			const workspace = initLoaderContext({
+				platform: "linux",
+				isCompiledBinary: false,
+				nativeDir: "/tmp/oh-my-pi/packages/natives/native",
+				leafPackageDir,
+			});
+			const installed = initLoaderContext({
+				platform: "linux",
+				isCompiledBinary: false,
+				nativeDir: "/tmp/node_modules/@oh-my-pi/pi-natives/native",
+				leafPackageDir,
+			});
+			const uppercaseWorkspace = initLoaderContext({
+				platform: "linux",
+				isCompiledBinary: false,
+				nativeDir: uppercaseNodeModulesNativeDir,
+				leafPackageDir,
+			});
+			const uppercaseWindowsInstall = initLoaderContext({
+				platform: "win32",
+				isCompiledBinary: false,
+				nativeDir: uppercaseNodeModulesNativeDir,
+				leafPackageDir,
+			});
+			const leafCandidate = path.join(leafPackageDir, installed.addonFilenames[0]);
+			const windowsLeafCandidate = path.join(leafPackageDir, uppercaseWindowsInstall.addonFilenames[0]);
+			const workspaceCandidate = path.join(uppercaseNodeModulesNativeDir, uppercaseWorkspace.addonFilenames[0]);
+
+			expect(workspace.isWorkspaceLoad).toBe(true);
+			expect(workspace.leafPackageDir).toBeNull();
+			expect(workspace.candidates).not.toContain(leafCandidate);
+			expect(installed.isWorkspaceLoad).toBe(false);
+			expect(installed.leafPackageDir).toBe(leafPackageDir);
+			expect(installed.candidates).toContain(leafCandidate);
+			expect(installed.candidates[0]).toBe(leafCandidate);
+
+			expect(uppercaseWorkspace.isWorkspaceLoad).toBe(true);
+			expect(uppercaseWorkspace.leafPackageDir).toBeNull();
+			expect(uppercaseWorkspace.candidates[0]).toBe(workspaceCandidate);
+
+			expect(uppercaseWindowsInstall.isWorkspaceLoad).toBe(false);
+			expect(uppercaseWindowsInstall.leafPackageDir).toBe(leafPackageDir);
+			expect(uppercaseWindowsInstall.stageFromNodeModules).toBe(true);
+			expect(uppercaseWindowsInstall.candidates).toContain(windowsLeafCandidate);
+		} finally {
+			if (previousVariantCache === undefined) delete process.env[variantCacheKey];
+			else process.env[variantCacheKey] = previousVariantCache;
+		}
 	});
 
 	it("falls back to the node_modules-only candidate list when staging is off", () => {

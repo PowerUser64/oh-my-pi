@@ -42,49 +42,60 @@ export type Edit =
 	| { kind: "delete"; anchor: Anchor; lineNum: number; index: number; oldAssertion?: string }
 	| {
 			/**
-			 * Clipboard cut (`CUT N.=M`, or the resolved form of `CUT.BLK N`).
-			 * Captures the range's current lines into the {@link Clipboard}
+			 * Clipboard cut (`CUT N-M @r`, or the resolved form of `CUT N* @r`).
+			 * Captures the range's current lines into a {@link Clipboard}
 			 * register during the applier's clipboard pre-pass and lowers to one
-			 * `delete` per range line at parse/resolve time.
+			 * `delete` per range line at parse/resolve time. `register` names the
+			 * target slot; absent means the batch-local anonymous register.
 			 */
 			kind: "cut";
 			range: ParsedRange;
+			register?: string;
 			lineNum: number;
 			index: number;
 	  }
 	| {
 			/**
-			 * Clipboard insertion (`PASTE.PRE N` / `PASTE.POST N` / `PASTE.HEAD` /
-			 * `PASTE.TAIL`, or the resolved form of `PASTE.BLK.POST N`). Expanded
-			 * by the clipboard pre-pass into one plain insert per captured line.
-			 * `blockStart` mirrors the insert variant's field for block-lowered
-			 * pastes so landing correction can slide the body across trailing
-			 * closer lines.
+			 * Clipboard insertion or replacement (`PUT <N @r` / `PUT >N @r` /
+			 * `PUT N-M @r`, their `>N*` block-resolved forms, or the register-less
+			 * anonymous equivalents). Expanded by the clipboard pre-pass into one
+			 * plain insert per captured line; `span` targets additionally expand
+			 * into per-line deletes there — only after the register read
+			 * succeeds, so a dropped paste (streaming preview with an empty
+			 * register) never leaves destructive orphan deletes. `blockStart`
+			 * mirrors the insert variant's field for block-lowered gap pastes so
+			 * landing correction can slide the body across trailing closer lines.
 			 */
 			kind: "paste";
-			cursor: Cursor;
+			at: PasteTarget;
+			register?: string;
 			lineNum: number;
 			index: number;
 			blockStart?: number;
 	  }
 	| {
 			/**
-			 * Deferred block edit (`SWAP.BLK N:`, `INS.BLK.POST N:`,
-			 * `CUT.BLK N`, or `PASTE.BLK.POST N`). The exact line span is
-			 * unknown at parse time; {@link resolveBlockEdits} computes it once
-			 * file text and language are available, then expands it into
-			 * concrete edits. `mode: "insert_after"` becomes plain
-			 * `after_anchor` inserts, `"cut"` becomes a clipboard cut plus
-			 * per-line deletes, and `"paste_after"` becomes a paste after the
-			 * resolved block. No mode denotes a block replacement.
+			 * Deferred block edit (`PUT N*:`, `PUT >N*:`, `CUT N*`, or their
+			 * `@register` forms). The exact line span is unknown at parse time;
+			 * {@link resolveBlockEdits} computes it once file text and language
+			 * are available, then expands it into concrete edits.
+			 * `mode: "insert_after"` becomes plain `after_anchor` inserts,
+			 * `"cut"` becomes a clipboard cut plus per-line deletes, and
+			 * `"paste_after"` becomes a gap paste after the resolved block. No
+			 * mode denotes a block replacement — from body payloads, or from
+			 * `register` when one is named (a span paste over the resolved block).
 			 */
 			kind: "block";
 			anchor: Anchor;
 			payloads: string[];
 			mode?: "insert_after" | "cut" | "paste_after";
+			register?: string;
 			lineNum: number;
 			index: number;
 	  };
+
+/** Where a `paste` edit lands: an insertion gap, or a span it replaces. */
+export type PasteTarget = { kind: "gap"; cursor: Cursor } | { kind: "span"; range: ParsedRange };
 
 /** File-level operation parsed from a section body (`REM` / `MV`). */
 export type FileOp = { kind: "rem" } | { kind: "move"; dest: string };
@@ -105,7 +116,7 @@ export interface ApplyResult {
 	blockResolutions?: BlockResolution[];
 }
 
-/** A parsed `[A.=B]` line range. */
+/** A parsed `A-B` inclusive line range. */
 export interface ParsedRange {
 	start: Anchor;
 	end: Anchor;
@@ -190,13 +201,25 @@ export interface BlockResolverRequest {
 export type BlockResolver = (request: BlockResolverRequest) => BlockSpan | null;
 
 /**
- * Mutable clipboard register threaded through one patch application. Filled
- * by `CUT` edits and read by `PASTE` edits in patch source order, across
- * sections, so content can move between files. Create one per batch (`{}`)
- * and hand it to every {@link Patcher.prepare} / `applyTo` call in that batch;
- * callers that omit it get a private per-call register.
+ * Mutable clipboard registers threaded through one patch application. Filled
+ * by `CUT` edits and read by register `PUT`s in patch source order, across
+ * sections, so content can move between files.
+ *
+ * The anonymous register (`lines`) is batch-local: {@link forkClipboard}
+ * never copies it in, so it exists only between a `CUT` and a paste inside
+ * one patch. Named registers (`named`) persist across batches when the host
+ * owns the Clipboard (`PatcherOptions.clipboard`) — the sanctioned way to
+ * move content across separate edit calls.
  */
 export interface Clipboard {
-	/** Lines captured by the most recent `CUT`, or unset. */
+	/** Anonymous register: lines captured by the latest unlabeled `CUT` in this batch. */
 	lines?: readonly string[];
+	/** Named registers captured by `CUT … @name`. */
+	named?: Map<string, readonly string[]>;
+	/**
+	 * Headers of unlabeled `CUT`s seen since the last unlabeled paste in this
+	 * batch. Two or more make the next unlabeled paste ambiguous (which cut
+	 * did the author mean?) and fail it with a labeling hint.
+	 */
+	pendingAnonCuts?: string[];
 }

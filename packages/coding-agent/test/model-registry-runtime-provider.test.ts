@@ -27,7 +27,7 @@ describe("ModelRegistry runtime provider registration", () => {
 
 	// Stub transport: reject every request so refresh("online") drives the full
 	// online discovery path with deterministic, instant failures instead of real
-	// network. Provider fetches (dynamic + models.dev) are caught and swallowed,
+	// network. Provider fetches (dynamic + stencil.so) are caught and swallowed,
 	// leaving the registry with its bundled catalog plus runtime overlays.
 	const offlineFetch: FetchImpl = () => Promise.reject(new Error("network disabled in model-registry runtime test"));
 

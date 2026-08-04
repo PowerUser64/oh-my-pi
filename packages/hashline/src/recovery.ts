@@ -49,6 +49,15 @@ function getEditAnchors(edit: Edit): Anchor[] {
 		for (let line = edit.range.start.line; line <= edit.range.end.line; line++) anchors.push({ line });
 		return anchors;
 	}
+	if (edit.kind === "paste") {
+		if (edit.at.kind === "span") {
+			const anchors: Anchor[] = [];
+			for (let line = edit.at.range.start.line; line <= edit.at.range.end.line; line++) anchors.push({ line });
+			return anchors;
+		}
+		const cursor = edit.at.cursor;
+		return cursor.kind === "before_anchor" || cursor.kind === "after_anchor" ? [cursor.anchor] : [];
+	}
 	return edit.cursor.kind === "before_anchor" || edit.cursor.kind === "after_anchor" ? [edit.cursor.anchor] : [];
 }
 
@@ -236,23 +245,55 @@ function remapEditsToCurrent(previousText: string, currentText: string, edits: r
 			remapped.push({ ...edit, range: { start: { line: start }, end: { line: end } } });
 			continue;
 		}
-
-		let blockStart = edit.blockStart;
-		if (blockStart !== undefined) {
-			const mappedBlockStart = mapLine(blockStart);
-			if (mappedBlockStart === null) return null;
-			blockStart = mappedBlockStart;
-		}
-
-		const cursor = edit.cursor;
-		if (cursor.kind !== "before_anchor" && cursor.kind !== "after_anchor") {
-			remapped.push(blockStart === edit.blockStart ? edit : { ...edit, blockStart });
+		if (edit.kind === "paste") {
+			let blockStart = edit.blockStart;
+			if (blockStart !== undefined) {
+				const mappedBlockStart = mapLine(blockStart);
+				if (mappedBlockStart === null) return null;
+				blockStart = mappedBlockStart;
+			}
+			if (edit.at.kind === "span") {
+				const start = mapLine(edit.at.range.start.line);
+				if (start === null) return null;
+				let end = start;
+				for (let line = edit.at.range.start.line + 1; line <= edit.at.range.end.line; line++) {
+					const mapped = mapLine(line);
+					if (mapped === null) return null;
+					end = mapped;
+				}
+				remapped.push({
+					...edit,
+					at: { kind: "span", range: { start: { line: start }, end: { line: end } } },
+					blockStart,
+				});
+				continue;
+			}
+			const cursor = edit.at.cursor;
+			if (cursor.kind !== "before_anchor" && cursor.kind !== "after_anchor") {
+				remapped.push(blockStart === edit.blockStart ? edit : { ...edit, blockStart });
+				continue;
+			}
+			const anchor = mapAnchor(cursor.anchor);
+			if (anchor === null) return null;
+			remapped.push({ ...edit, at: { kind: "gap", cursor: { kind: cursor.kind, anchor } }, blockStart });
 			continue;
 		}
-
-		const anchor = mapAnchor(cursor.anchor);
-		if (anchor === null) return null;
-		remapped.push({ ...edit, cursor: { kind: cursor.kind, anchor }, blockStart });
+		if (edit.kind === "insert") {
+			let blockStart = edit.blockStart;
+			if (blockStart !== undefined) {
+				const mappedBlockStart = mapLine(blockStart);
+				if (mappedBlockStart === null) return null;
+				blockStart = mappedBlockStart;
+			}
+			const cursor = edit.cursor;
+			if (cursor.kind !== "before_anchor" && cursor.kind !== "after_anchor") {
+				remapped.push(blockStart === edit.blockStart ? edit : { ...edit, blockStart });
+				continue;
+			}
+			const anchor = mapAnchor(cursor.anchor);
+			if (anchor === null) return null;
+			remapped.push({ ...edit, cursor: { kind: cursor.kind, anchor }, blockStart });
+		}
 	}
 
 	if (offsets.length === 0) return null;

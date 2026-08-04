@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { $which, getPuppeteerDir, logger } from "@oh-my-pi/pi-utils";
+import { $which, getPuppeteerDir, logger, removeWithRetries } from "@oh-my-pi/pi-utils";
 import type * as BrowsersNs from "@puppeteer/browsers";
 import type { Browser, CDPSession, Page, default as Puppeteer, Target } from "puppeteer-core";
 import stealthTamperingScript from "../puppeteer/00_stealth_tampering.txt" with { type: "text" };
@@ -285,19 +285,28 @@ export interface LaunchHeadlessOptions {
 	ignoreDefaultArgs?: readonly string[];
 }
 
-export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promise<Browser> {
-	const vp = opts.viewport ?? DEFAULT_VIEWPORT;
-	const initialViewport = {
-		width: vp.width,
-		height: vp.height,
-		deviceScaleFactor: vp.deviceScaleFactor ?? DEFAULT_VIEWPORT.deviceScaleFactor,
-	};
-	const puppeteer = await loadPuppeteer();
+/** Result of a headless Chromium launch. */
+export interface LaunchHeadlessResult {
+	browser: Browser;
+	/**
+	 * OMP-owned temporary Chromium profile directory to remove after the browser
+	 * process tree exits, or `undefined` when the caller supplied its own
+	 * `--user-data-dir` (which OMP must not delete).
+	 */
+	userDataDir?: string;
+}
+
+/**
+ * Base Chromium argv shared by process-local puppeteer launches and the
+ * broker-owned shared browser: sandbox/stealth flags, window size, and
+ * PUPPETEER_PROXY* env-derived proxy flags.
+ */
+export function buildHeadlessLaunchArgs(viewport: { width: number; height: number }): string[] {
 	const launchArgs = [
 		"--no-sandbox",
 		"--disable-setuid-sandbox",
 		"--disable-blink-features=AutomationControlled",
-		`--window-size=${initialViewport.width},${initialViewport.height}`,
+		`--window-size=${viewport.width},${viewport.height}`,
 	];
 	const proxy = process.env.PUPPETEER_PROXY;
 	if (proxy) {
@@ -313,18 +322,103 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 	if (ignoreCert === "true" || ignoreCert === "1" || ignoreCert === "yes" || ignoreCert === "on") {
 		launchArgs.push("--ignore-certificate-errors");
 	}
+	return launchArgs;
+}
+
+export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promise<LaunchHeadlessResult> {
+	const vp = opts.viewport ?? DEFAULT_VIEWPORT;
+	const initialViewport = {
+		width: vp.width,
+		height: vp.height,
+		deviceScaleFactor: vp.deviceScaleFactor ?? DEFAULT_VIEWPORT.deviceScaleFactor,
+	};
+	const puppeteer = await loadPuppeteer();
+	const launchArgs = buildHeadlessLaunchArgs(initialViewport);
 	for (const arg of opts.args ?? []) {
 		if (!launchArgs.includes(arg)) launchArgs.push(arg);
 	}
+	// Own the Chromium profile directory instead of letting puppeteer-core create
+	// (and delete) a temporary one. Passing `--user-data-dir` makes puppeteer
+	// treat the profile as non-temporary, so `ChromeLauncher.cleanUserDataDir`
+	// becomes a no-op and can no longer reject its eager process-exit hook with an
+	// unhandled EBUSY when Chromium still holds the profile lock on Windows
+	// (issue #7058). `removeUserDataDir` cleans it up on our terms instead.
+	let userDataDir: string | undefined;
+	if (!launchArgs.some(arg => arg.startsWith("--user-data-dir"))) {
+		userDataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "omp-chrome-profile-"));
+		launchArgs.push(`--user-data-dir=${userDataDir}`);
+	}
+	try {
+		const executablePath = await ensureChromiumExecutable();
+		const browser = await puppeteer.launch({
+			headless: opts.headless,
+			defaultViewport: opts.headless ? initialViewport : null,
+			executablePath,
+			args: launchArgs,
+			ignoreDefaultArgs: [
+				...new Set([...stealthIgnoreDefaultArgs(executablePath), ...(opts.ignoreDefaultArgs ?? [])]),
+			],
+			protocolTimeout: BROWSER_PROTOCOL_TIMEOUT_MS,
+		});
+		return { browser, userDataDir };
+	} catch (error) {
+		if (userDataDir) await removeUserDataDir(userDataDir);
+		throw error;
+	}
+}
+
+/** Fully resolved executable and argv for a broker-spawned shared Chromium. */
+export interface SharedBrowserLaunchSpec {
+	executablePath: string;
+	args: string[];
+}
+
+/**
+ * Resolve the executable and complete argv for a shared Chromium the daemon
+ * broker spawns directly (no puppeteer inside the broker). Mirrors
+ * `launchHeadlessBrowser` flag assembly — puppeteer's default args minus the
+ * stealth-suppressed set — plus `--remote-debugging-port=0` so every client
+ * attaches over CDP. Returns null when no Chromium executable resolves;
+ * callers fall back to a process-local launch.
+ */
+export async function resolveSharedBrowserLaunchSpec(opts: {
+	headless: boolean;
+	userDataDir: string;
+	viewport?: { width: number; height: number };
+}): Promise<SharedBrowserLaunchSpec | null> {
 	const executablePath = await ensureChromiumExecutable();
-	return await puppeteer.launch({
+	if (!executablePath) return null;
+	const puppeteer = await loadPuppeteer();
+	const vp = opts.viewport ?? DEFAULT_VIEWPORT;
+	const ignored = new Set(stealthIgnoreDefaultArgs(executablePath));
+	const defaults = await puppeteer.defaultArgs({
 		headless: opts.headless,
-		defaultViewport: opts.headless ? initialViewport : null,
-		executablePath,
-		args: launchArgs,
-		ignoreDefaultArgs: [...new Set([...stealthIgnoreDefaultArgs(executablePath), ...(opts.ignoreDefaultArgs ?? [])])],
-		protocolTimeout: BROWSER_PROTOCOL_TIMEOUT_MS,
+		args: buildHeadlessLaunchArgs(vp),
+		userDataDir: opts.userDataDir,
 	});
+	return {
+		executablePath,
+		args: [...defaults.filter(arg => !ignored.has(arg)), "--remote-debugging-port=0"],
+	};
+}
+
+/**
+ * Remove an OMP-owned headless Chromium profile directory, tolerating the brief
+ * window on Windows in which Chromium (or an orphaned browser subprocess) still
+ * holds the profile lock. The shared temp remover centralizes retry handling
+ * for EBUSY/EPERM/ENOTEMPTY; if the directory is still busy afterwards we warn
+ * and leave it for a later cleanup pass rather than throwing — a shutdown cleanup
+ * failure must never crash the process (issue #7058).
+ */
+export async function removeUserDataDir(dir: string): Promise<void> {
+	try {
+		await removeWithRetries(dir);
+	} catch (error) {
+		logger.warn("Left Chromium profile directory in place after cleanup failure", {
+			dir,
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
 }
 
 export async function applyViewport(

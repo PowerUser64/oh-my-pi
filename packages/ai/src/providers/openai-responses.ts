@@ -610,12 +610,11 @@ const streamOpenAIResponsesOnce = (
 							strictRetryAvailable &&
 							!requestSignal.aborted &&
 							(compiledGrammarTooLarge ||
-								shouldRetryWithoutStrictTools(
-									error,
-									capturedErrorResponse,
-									activeStrictToolsApplied,
-									context.tools,
-								));
+								shouldRetryWithoutStrictTools(error, capturedErrorResponse, {
+									model,
+									strictToolsApplied: activeStrictToolsApplied,
+									tools: context.tools,
+								}));
 						if (canRetryWithoutStrictTools) {
 							strictRetryAvailable = false;
 							forceDisableStrictTools = true;

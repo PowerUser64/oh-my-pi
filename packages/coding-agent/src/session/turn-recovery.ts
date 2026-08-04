@@ -121,7 +121,13 @@ export interface TurnRecoveryHost {
 	sessionMessageAlreadyPersisted(message: AssistantMessage): boolean;
 	setModelWithProviderSessionReset(model: Model): Promise<void>;
 	resetCurrentResponsesProviderSession(reason: string): void;
-	maybeAutoRedeemCodexReset(): Promise<boolean>;
+	/**
+	 * Spend a saved Codex reset for the blocked pool, if eligible.
+	 * `activeBlockUnblockAtMs` is the absolute unblock time parsed from the
+	 * live usage-limit error — authoritative for the active account when the
+	 * usage report still shows a pre-block snapshot.
+	 */
+	maybeAutoRedeemCodexReset(activeBlockUnblockAtMs?: number): Promise<boolean>;
 	runAutoCompaction(
 		reason: "overflow" | "threshold" | "idle" | "incomplete",
 		willRetry: boolean,
@@ -1390,7 +1396,14 @@ export class TurnRecovery {
 		}
 
 		if (!retryBudgetExhausted && !staleOpenAIResponsesReplayError && recordedUsageLimitOutcome) {
-			if (recordedUsageLimitOutcome.switchedCredential || (await this.#host.maybeAutoRedeemCodexReset())) {
+			if (
+				recordedUsageLimitOutcome.switchedCredential ||
+				// Convert the parsed hint to an absolute timestamp NOW, before the
+				// hook's usage IO — a duration re-anchored after slow fetches drifts.
+				(await this.#host.maybeAutoRedeemCodexReset(
+					parsedRetryAfterMs === undefined ? undefined : Date.now() + parsedRetryAfterMs,
+				))
+			) {
 				switchedCredential = true;
 				delayMs = 0;
 			} else {

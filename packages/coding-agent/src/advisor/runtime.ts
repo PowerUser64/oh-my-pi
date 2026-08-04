@@ -51,11 +51,11 @@ export interface AdvisorRuntimeHost {
 	maintainContext?(incomingTokens: number, signal: AbortSignal): Promise<boolean>;
 	/**
 	 * Called immediately before each `agent.prompt(batch)` cycle. Lets the host
-	 * clear per-update advisor state — currently the one-advise-per-update gate
-	 * in {@link AdvisorEmissionGuard}, which the host owns because it is the
-	 * one that routes `advise()` results back to the primary.
+	 * clear per-update advisor state and apply the in-progress delivery policy.
+	 * The host owns these gates because it routes `advise()` results back to the
+	 * primary.
 	 */
-	beginAdvisorUpdate?(): void;
+	beginAdvisorUpdate?(inProgress: boolean): void;
 	/**
 	 * Called with the error of every failed advisor turn, before the retry sleep
 	 * or the dropped-after-3 path. Lets the host apply credential-level remedies
@@ -909,8 +909,8 @@ export class AdvisorRuntime {
 				const contextWasFresh = resetContext || recoveringOverflow || messageSnapshot === 0;
 				try {
 					// Reset the host's per-update advisor state (one-advise-per-update
-					// gate) before each model cycle so the new batch starts fresh.
-					this.host.beginAdvisorUpdate?.();
+					// gate) and pass through whether this batch reviews partial work.
+					this.host.beginAdvisorUpdate?.(wip);
 					const prompt = this.agent.prompt(batch);
 					this.#promptInFlight = prompt;
 					try {

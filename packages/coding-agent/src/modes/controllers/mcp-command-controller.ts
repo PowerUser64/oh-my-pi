@@ -1228,7 +1228,7 @@ export class MCPCommandController {
 			await addMCPServer(filePath, name, config);
 
 			// Reload MCP manager
-			await this.#reloadMCP();
+			await this.reloadServers();
 			const state =
 				config.enabled === false
 					? "disconnected"
@@ -1486,7 +1486,7 @@ export class MCPCommandController {
 			await removeMCPServer(filePath, name);
 
 			// Reload MCP manager
-			await this.#reloadMCP();
+			await this.reloadServers();
 
 			this.#showMessage(["", theme.fg("success", `- Removed server "${name}" from ${scope} config`), ""].join("\n"));
 		} catch (error) {
@@ -1736,7 +1736,7 @@ export class MCPCommandController {
 					);
 					return;
 				}
-				await this.#reloadMCP();
+				await this.reloadServers();
 				this.#showMessage(
 					["", theme.fg("success", `- Cleared auth for "${name}" (${found.scope} config)`), ""].join("\n"),
 				);
@@ -1745,7 +1745,7 @@ export class MCPCommandController {
 
 			const updated = this.#stripOAuthAuth(found.config);
 			await updateMCPServer(found.filePath, name, updated);
-			await this.#reloadMCP();
+			await this.reloadServers();
 
 			this.#showMessage(
 				["", theme.fg("success", `- Cleared auth for "${name}" (${found.scope} config)`), ""].join("\n"),
@@ -1793,16 +1793,22 @@ export class MCPCommandController {
 			const oauth = await this.#resolveOAuthEndpointsFromServer(runtimeBaseConfig, options.authChallenge);
 			const serverUrl =
 				runtimeBaseConfig.type === "http" || runtimeBaseConfig.type === "sse" ? runtimeBaseConfig.url : undefined;
-			// A user-supplied client secret may live in either block (the wizard
-			// writes it to auth.clientSecret); DCR secrets are embedded in the
-			// stored credential and never echoed back into config files.
-			const configuredClientId = found.config.oauth?.clientId ?? currentAuth?.clientId;
+			// Client credentials drive the token exchange, so they must come from the
+			// env-expanded runtime config; `found.config`/`currentAuth` may still hold
+			// `${...}` placeholders (the wizard writes the secret to auth.clientSecret).
+			// DCR secrets are embedded in the stored credential and never echoed back
+			// into config files.
+			const runtimeAuth = currentAuth ? expandEnvVarsDeep(currentAuth) : undefined;
+			const configuredClientId = runtimeBaseConfig.oauth?.clientId ?? runtimeAuth?.clientId;
 			const existingCredential = lookupMcpOAuthCredentialForServer(authStorage, currentAuth, serverUrl)?.credential;
 			const flowClientId = oauth.clientId ?? configuredClientId ?? existingCredential?.clientId ?? "";
 			const storedClientSecret =
 				existingCredential?.clientId === flowClientId ? existingCredential.clientSecret : undefined;
+			const flowClientSecret =
+				runtimeBaseConfig.oauth?.clientSecret ?? runtimeAuth?.clientSecret ?? storedClientSecret ?? "";
+			// Persisted separately below: keep the raw `${...}` placeholder in the file
+			// rather than writing the resolved secret back to (possibly shared) config.
 			const userClientSecret = found.config.oauth?.clientSecret ?? currentAuth?.clientSecret;
-			const flowClientSecret = userClientSecret ?? storedClientSecret ?? "";
 
 			if (!options.silent) {
 				this.#showMessage(["", theme.fg("muted", `Reauthorizing "${name}"...`), ""].join("\n"));
@@ -1856,7 +1862,7 @@ export class MCPCommandController {
 				await updateMCPServer(found.filePath, name, updatedConfig);
 			}
 			if (options.reload !== false) {
-				await this.#reloadMCP();
+				await this.reloadServers();
 				const state = await this.#waitForServerConnectionWithAnimation(name);
 
 				const lines = [
@@ -1891,7 +1897,7 @@ export class MCPCommandController {
 	async #handleReload(): Promise<void> {
 		try {
 			this.#showMessage(["", theme.fg("muted", "Reloading MCP servers and runtime tools..."), ""].join("\n"));
-			await this.#reloadMCP();
+			await this.reloadServers();
 			const connectedCount = this.ctx.mcpManager?.getConnectedServers().length ?? 0;
 			this.#showMessage(
 				[
@@ -1979,18 +1985,35 @@ export class MCPCommandController {
 	}
 
 	/**
-	 * Reload MCP manager with new configs
+	 * Reconnect every configured MCP server and rebind the session's MCP tools.
+	 *
+	 * Disconnects all live connections, rediscovers `.mcp.json` configs, and
+	 * calls `session.refreshMCPTools(...)` so config edits take effect without a
+	 * restart. Public because `/reload-plugins` reuses it alongside `/mcp reload`
+	 * and the config-mutation flows in this controller.
+	 *
+	 * Discovery options are derived from settings so the reload honors the same
+	 * opt-outs as startup — notably `mcp.enableProjectConfig: false`, which must
+	 * keep project `.mcp.json` servers from being started on reload.
 	 */
-	async #reloadMCP(): Promise<void> {
+	async reloadServers(): Promise<void> {
 		if (!this.ctx.mcpManager) {
 			return;
 		}
 
 		// Disconnect all existing servers
 		await this.ctx.mcpManager.disconnectAll();
+		// Prompt enrichment is asynchronous. Clear commands before rediscovery so
+		// removed/disabled servers cannot leave stale `/server:prompt` entries;
+		// newly loaded prompts repopulate them through the manager callback.
+		this.ctx.session.setMCPPromptCommands([]);
 
-		// Rediscover and connect
-		const result = await this.ctx.mcpManager.discoverAndConnect();
+		// Rediscover and connect, mirroring startup's discovery filters.
+		const result = await this.ctx.mcpManager.discoverAndConnect({
+			enableProjectConfig: this.ctx.settings.get("mcp.enableProjectConfig") ?? true,
+			filterExa: true,
+			filterBrowser: this.ctx.settings.get("browser.enabled") ?? false,
+		});
 		await this.ctx.session.refreshMCPTools(this.ctx.mcpManager.getTools());
 
 		this.#showMCPConnectionErrors(result.errors);

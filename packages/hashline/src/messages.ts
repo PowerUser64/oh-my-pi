@@ -33,16 +33,34 @@ export function formatAnchoredContext(anchorLines: readonly number[], fileLines:
 /** Concrete range operation rejected because its absolute end precedes its start. */
 export type AbsoluteRangeOp = "replace" | "cut";
 
-/** Header forms per concrete-range op, used to compose retry suggestions. */
-const RANGE_OP_FORMS: Record<AbsoluteRangeOp, { keyword: string; colon: string; blockKeyword: string }> = {
-	replace: { keyword: "SWAP", colon: ":", blockKeyword: "SWAP.BLK" },
-	cut: { keyword: "CUT", colon: "", blockKeyword: "CUT.BLK" },
+/** Format a register suffix (` @name` or empty). */
+function regSuffix(register?: string): string {
+	return register ? ` @${register}` : "";
+}
+
+/** Header composers per concrete-range op, used in retry suggestions. */
+const RANGE_OP_FORMS: Record<
+	AbsoluteRangeOp,
+	{ single: (line: number, reg?: string) => string; range: (start: number, end: number, reg?: string) => string }
+> = {
+	replace: {
+		single: (line, reg) => (reg ? `PUT ${line}${regSuffix(reg)}` : `PUT ${line}:`),
+		range: (start, end, reg) =>
+			reg ? `PUT ${start}${HL_RANGE_SEP}${end}${regSuffix(reg)}` : `PUT ${start}${HL_RANGE_SEP}${end}:`,
+	},
+	cut: {
+		single: (line, reg) => `CUT ${line}${regSuffix(reg)}`,
+		range: (start, end, reg) => `CUT ${start}${HL_RANGE_SEP}${end}${regSuffix(reg)}`,
+	},
 };
 
-/** `OP.BLK N`-style header for a concrete-range op (`SWAP.BLK 5:` / `CUT.BLK 5`). */
-function blockFormAt(op: AbsoluteRangeOp, line: number): string {
-	const forms = RANGE_OP_FORMS[op];
-	return `${forms.blockKeyword} ${line}${forms.colon}`;
+/** Block-locator header for a concrete-range op (`PUT 5*:` / `CUT 5*`). */
+function blockFormAt(op: AbsoluteRangeOp, line: number, reg?: string): string {
+	return op === "replace"
+		? reg
+			? `PUT ${line}*${regSuffix(reg)}`
+			: `PUT ${line}*:`
+		: `CUT ${line}*${regSuffix(reg)}`;
 }
 
 /** Explain absolute range endpoints and provide safe, non-applying retry forms. */
@@ -52,15 +70,14 @@ export function invalidAbsoluteRangeMessage(
 	end: number,
 	op: AbsoluteRangeOp,
 	block?: BlockSpan,
+	register?: string,
 ): string {
 	const forms = RANGE_OP_FORMS[op];
-	const single = op === "replace" ? `SWAP ${start}${HL_RANGE_SEP}${start}:` : `${forms.keyword} ${start}`;
+	const single = forms.single(start, register);
 	const countedEnd = start + end - 1;
 	const counted =
-		Number.isSafeInteger(countedEnd) && countedEnd >= start
-			? `${forms.keyword} ${start}${HL_RANGE_SEP}${countedEnd}${forms.colon}`
-			: null;
-	const blockForm = blockFormAt(op, start);
+		Number.isSafeInteger(countedEnd) && countedEnd >= start ? forms.range(start, countedEnd, register) : null;
+	const blockForm = blockFormAt(op, start, register);
 	let message =
 		`line ${patchLine}: Invalid absolute range: start ${start}, end ${end}. ` +
 		`The value after \`${HL_RANGE_SEP}\` is an absolute source line, not a line count or replacement length. ` +
@@ -87,33 +104,48 @@ export const END_PATCH_MARKER = "*** End Patch";
  */
 export const ABORT_MARKER = "*** Abort";
 
-/** Two consecutive hunks targeted the exact same concrete range. */
-export const REPLACE_PAIR_COALESCED_WARNING = `Two hunks targeted the same range; kept only the second. One \`SWAP N${HL_RANGE_SEP}M:\` hunk per range — the body is the final content, never old+new.`;
+/** Exact-range duplicate hunks were normalized to the final hunk. */
+export const REPLACE_PAIR_COALESCED_WARNING =
+	"Multiple hunks targeted the same exact range; kept only the last. Issue one `PUT` or `CUT` hunk per range.";
 
-/** Bare bodyless hunk followed by an overlapping concrete hunk. */
-`Dropped a bare hunk overlapped by the concrete hunk after it. One \`SWAP N${HL_RANGE_SEP}M:\` hunk per range — the body is the final content, never old+new.`;
+/** Replacement body indentation was aligned from unchanged structural rows. */
+export const REPLACEMENT_INDENT_AUTO_SHIFT_WARNING =
+	"Auto-indented a replacement body to match unchanged structural rows in its source range.";
 
 /** Bare body rows auto-converted to literal `+` rows. */
 export const BARE_BODY_AUTO_PIPED_WARNING =
 	"Auto-prefixed bare body row(s) with `+`. Body rows must be `+TEXT` literal lines.";
 
+/** Top-level read-output rows recovered as single-line replacements. */
+export const SNAPSHOT_ROWS_AUTO_PUT_WARNING = `Recovered top-level \`N:TEXT\` snapshot row(s) as single-line \`PUT N${HL_RANGE_SEP}N:\` replacements. Use explicit \`PUT\` headers for reliable edits.`;
+/** Bare range header recovered as an implicit replacement hunk. */
+export const BARE_RANGE_AUTO_PUT_WARNING = `Recovered a bare \`N${HL_RANGE_SEP}M:\` header as \`PUT N${HL_RANGE_SEP}M:\`. Prefix replacement ranges with \`PUT\`.`;
+
+/** Copied read-output elision rows were ignored rather than written as source. */
+export const READ_METADATA_IGNORED_WARNING =
+	"Ignored copied read-output elision row(s). Re-read elided ranges before editing them.";
+
+/** Empty span/block PUT recovered as a delete-only edit. */
+export const EMPTY_PUT_AUTO_CUT_WARNING = `Interpreted an empty \`PUT\` body as deletion. Use \`CUT N${HL_RANGE_SEP}M\` or \`CUT N*\` for bodyless deletes.`;
+
+/** A bodyless CUT carried a harmless trailing colon. */
+export const CUT_COLON_IGNORED_WARNING = `Ignored a trailing \`:\` on bodyless \`CUT\`. Prefer \`CUT N${HL_RANGE_SEP}M\` / \`CUT N*\` without a colon.`;
+
 /**
  * Bare `-` body rows accepted as literal Markdown bullets. Only emitted when
  * the hunk is unambiguously a bullet list: every `-` row is bullet-shaped
+
  * (`- item`) and the body has no unified-diff `+new` counterpart rows.
  */
 export const MINUS_BULLET_AUTO_PIPED_WARNING =
 	"Auto-prefixed bare `- ` bullet row(s) as literal content. `-` rows never remove lines — the range does that; always prefix literal body rows with `+`: `+- item`.";
+/** Unified-diff old rows were discarded; explicit `+` rows are final content. */
+export const DIFF_OLD_ROWS_IGNORED_WARNING =
+	"Ignored unified-diff `-old` row(s); the range already removes old content, so only `+new` rows were kept.";
 
 /** Unified-diff-style `-` row in a hunk body. */
 export const MINUS_ROW_REJECTED =
 	"`-` rows are not valid; the range already names the lines being changed. For Markdown bullets or other literal `-` lines, prefix the literal row with `+`: `+- item`.";
-
-/** Replace hunk with no body. */
-export const EMPTY_REPLACE = `\`SWAP N${HL_RANGE_SEP}M:\` needs at least one \`+TEXT\` body row. To delete lines, use \`CUT N${HL_RANGE_SEP}M\`.`;
-
-/** `SWAP.BLK N:` hunk with no body. */
-export const EMPTY_BLOCK = "`SWAP.BLK N:` needs at least one `+TEXT` body row. To delete a block, use `CUT.BLK N`.";
 
 /** Optional source-aware suggestions appended to block-anchor diagnostics. */
 export interface BlockDiagnosticSuggestions {
@@ -126,22 +158,29 @@ export interface BlockDiagnosticSuggestions {
 /**
  * A block-anchored replace/cut could not resolve to a syntactic block.
  * Appends a {@link formatAnchoredContext} preview when `fileLines` is given.
- * `INS.BLK.POST N:` never reaches this path; it lowers to `INS.POST N:`.
+ * `PUT >N*` never reaches this path; it lowers to `PUT >N`.
  */
 export function blockUnresolvedMessage(
 	line: number,
 	op: AbsoluteRangeOp = "replace",
 	fileLines?: readonly string[],
 	suggestions: BlockDiagnosticSuggestions = {},
+	register?: string,
 ): string {
-	const forms = RANGE_OP_FORMS[op];
-	const phrase = blockFormAt(op, line);
-	const fallback = `${forms.keyword} ${line}${HL_RANGE_SEP}M${forms.colon}`;
+	const phrase = blockFormAt(op, line, register);
+	const fallback =
+		op === "replace"
+			? register
+				? `PUT ${line}${HL_RANGE_SEP}M @${register}`
+				: `PUT ${line}${HL_RANGE_SEP}M:`
+			: register
+				? `CUT ${line}${HL_RANGE_SEP}M @${register}`
+				: `CUT ${line}${HL_RANGE_SEP}M`;
 	const anchorText = fileLines?.[line - 1];
 	const nextBlock = suggestions.nextBlock;
 	let message: string;
 	if (anchorText !== undefined && anchorText.trim().length === 0 && nextBlock) {
-		const retry = blockFormAt(op, nextBlock.start);
+		const retry = blockFormAt(op, nextBlock.start, register);
 		message =
 			`Line ${line} is blank; no syntactic block can begin there. ` +
 			`The next multi-line block begins at line ${nextBlock.start} and ends at line ${nextBlock.end}. ` +
@@ -153,7 +192,7 @@ export function blockUnresolvedMessage(
 	}
 	const enclosingBlock = suggestions.enclosingBlock;
 	if (enclosingBlock) {
-		const retry = blockFormAt(op, enclosingBlock.start);
+		const retry = blockFormAt(op, enclosingBlock.start, register);
 		message +=
 			` The nearest enclosing multi-line block begins at line ${enclosingBlock.start} ` +
 			`and ends at line ${enclosingBlock.end}; use \`${retry}\` to target it.`;
@@ -167,7 +206,7 @@ export function blockUnresolvedMessage(
 
 /** Block-anchored edit reached a path with no {@link BlockResolver} wired in. */
 export const BLOCK_RESOLVER_UNAVAILABLE =
-	"Block ops (`SWAP.BLK`, `INS.BLK.POST`, `CUT.BLK`, `PASTE.BLK.POST`) are not available here (no block resolver configured). Use a concrete line range.";
+	"Block locators (`N*` in `PUT N*:`, `PUT >N*`, `CUT N*`) are not available here (no block resolver configured). Use a concrete line range.";
 
 /**
  * An after-block op anchored on a closing-delimiter line, lowered to its
@@ -187,24 +226,24 @@ function unresolvedLoweredWarning(blockForm: string, line: number, plainForm: st
 	return `\`${blockForm}\` could not resolve a syntactic block on line ${line}, so it was applied as plain \`${plainForm}\`. Verify the landing line; anchor on a line that OPENS a construct.`;
 }
 
-/** `INS.BLK.POST N:` anchored on a closing-delimiter line; applied as `INS.POST N:`. */
+/** `PUT >N*:` anchored on a closing-delimiter line; applied as `PUT >N:`. */
 export function insertAfterBlockCloserLoweredWarning(line: number): string {
-	return closerLoweredWarning(`INS.BLK.POST ${line}:`, `INS.POST ${line}:`);
+	return closerLoweredWarning(`PUT >${line}*:`, `PUT >${line}:`);
 }
 
-/** `INS.BLK.POST N:` anchor unresolvable; applied as `INS.POST N:`. */
+/** `PUT >N*:` anchor unresolvable; applied as `PUT >N:`. */
 export function insertAfterBlockUnresolvedLoweredWarning(line: number): string {
-	return unresolvedLoweredWarning(`INS.BLK.POST ${line}:`, line, `INS.POST ${line}:`);
+	return unresolvedLoweredWarning(`PUT >${line}*:`, line, `PUT >${line}:`);
 }
 
-/** `PASTE.BLK.POST N` anchored on a closing-delimiter line; applied as `PASTE.POST N`. */
+/** Register `PUT >N*` anchored on a closing-delimiter line; applied as `PUT >N`. */
 export function pasteAfterBlockCloserLoweredWarning(line: number): string {
-	return closerLoweredWarning(`PASTE.BLK.POST ${line}`, `PASTE.POST ${line}`);
+	return closerLoweredWarning(`PUT >${line}*`, `PUT >${line}`);
 }
 
-/** `PASTE.BLK.POST N` anchor unresolvable; applied as `PASTE.POST N`. */
+/** Register `PUT >N*` anchor unresolvable; applied as `PUT >N`. */
 export function pasteAfterBlockUnresolvedLoweredWarning(line: number): string {
-	return unresolvedLoweredWarning(`PASTE.BLK.POST ${line}`, line, `PASTE.POST ${line}`);
+	return unresolvedLoweredWarning(`PUT >${line}*`, line, `PUT >${line}`);
 }
 /**
  * A one-sided boundary echo whose payload is too short to be the widened
@@ -224,7 +263,7 @@ export function ambiguousBoundaryEchoMessage(
 			? `opens by restating the ${count} line(s) just above the range`
 			: `ends by restating the ${count} line(s) just below the range`;
 	return (
-		`\`SWAP ${startLine}${HL_RANGE_SEP}${endLine}:\` rejected: the body ${where}, ` +
+		`\`PUT ${startLine}${HL_RANGE_SEP}${endLine}:\` rejected: the body ${where}, ` +
 		`but is too short to be the full final content of the widened range — applying it as-is or ` +
 		`auto-repairing would delete range line(s) the body never restates. ` +
 		`Re-issue with the range covering exactly the lines that change and the body as their complete ` +
@@ -248,11 +287,11 @@ export function ambiguousCloserSpareMessage(
 ): string {
 	const closers = count === 1 ? `line ${closerLine}` : `lines ${closerLine}-${closerLine + count - 1}`;
 	return (
-		`\`SWAP ${startLine}${HL_RANGE_SEP}${endLine}:\` rejected: the range deletes the closing-delimiter ` +
+		`\`PUT ${startLine}${HL_RANGE_SEP}${endLine}:\` rejected: the range deletes the closing-delimiter ` +
 		`${closers} but the body never restates it, and the body claims no position inside that block ` +
 		`(no unmatched opener, indentation not deeper than the closer) — whether the new content belongs ` +
 		`before or after the closer is ambiguous. Restate the closer in the body at the intended position, ` +
-		`or use \`INS.PRE ${closerLine}:\` / \`INS.POST ${closerLine}:\` instead.`
+		`or use \`PUT <${closerLine}:\` / \`PUT >${closerLine}:\` instead.`
 	);
 }
 
@@ -271,15 +310,40 @@ export const REM_TAKES_NO_BODY =
 export const MOVE_TAKES_NO_BODY =
 	"`MV DEST` does not take body rows. Put line edits above the `MV` row; the destination path follows `MV` on the same line.";
 
-/** `CUT N.=M` hunk received a body row. */
-export const CUT_TAKES_NO_BODY = `\`CUT N${HL_RANGE_SEP}M\` captures + deletes lines and takes no body rows. To replace lines with new content, use \`SWAP N${HL_RANGE_SEP}M:\`.`;
+/** `CUT` hunk received a body row. */
+export const CUT_TAKES_NO_BODY = `\`CUT\` deletes (and captures) the named lines and takes no body rows. To write new content, use \`PUT N${HL_RANGE_SEP}M:\` with \`+TEXT\` rows.`;
 
-/** `PASTE` hunk received a body row. */
-export const PASTE_TAKES_NO_BODY =
-	"`PASTE` inserts the clipboard content and takes no `+` body rows. To insert literal text, use `INS`.";
+/** Register `PUT` header carried a `:`. */
+export const COLON_ON_REGISTER_PUT =
+	"`PUT … @name` pastes the register and never takes `:` — the colon promises body rows. Drop the colon (`PUT >40 @name`), or drop `@name` and write `+TEXT` body rows.";
 
-/** `PASTE` ran with an empty clipboard register. */
-export const EMPTY_PASTE = `\`PASTE\` found nothing in the clipboard. Ops run top-to-bottom across the whole patch (sections included): put \`CUT N${HL_RANGE_SEP}M\` or \`CUT.BLK N\` above the \`PASTE\`.`;
+/** Register `PUT` hunk received a body row. */
+export const REGISTER_PUT_TAKES_NO_BODY =
+	"A register `PUT` pastes captured lines and takes no `+` body rows. To write literal text, drop the `@name` and use `PUT …:` with body rows.";
+
+/** Colonless `PUT` hunk received a body row. */
+export const COLONLESS_PUT_TAKES_NO_BODY =
+	"`PUT` without `:` is clipboard-backed and takes no body rows. Add `:` after the locator to write literal content (`PUT >40:` then `+TEXT` rows).";
+
+/** Colonless anonymous `PUT` on a span target. */
+export const COLONLESS_SPAN_PUT = `Colonless \`PUT\` is clipboard-backed, and span targets need a named register (\`PUT 5${HL_RANGE_SEP}9 @name\`); the anonymous register pastes only at gaps (\`PUT >40\`). To write literal content, add \`:\` and \`+TEXT\` body rows.`;
+
+/** Anonymous paste ran with an empty anonymous register. */
+export const EMPTY_PASTE = `Nothing to paste: no unlabeled \`CUT\` precedes this \`PUT\` in this call, and the anonymous register never carries across calls. Put \`CUT N${HL_RANGE_SEP}M\` / \`CUT N*\` above it, or use named registers (\`CUT … @name\` → \`PUT … @name\`) for cross-call moves.`;
+
+/** Named paste read a register that holds nothing. */
+export function unknownRegisterMessage(name: string, known: readonly string[]): string {
+	const base = `\`@${name}\` is empty: no \`CUT … @${name}\` precedes this op in this call and no persisted register has that name.`;
+	return known.length === 0 ? base : `${base} Available registers: ${known.map(k => `\`@${k}\``).join(", ")}.`;
+}
+
+/** Unlabeled paste with two or more unlabeled cuts pending. */
+export function ambiguousAnonymousPasteMessage(pending: readonly string[]): string {
+	return (
+		`${pending.length} unlabeled \`CUT\`s are pending (${pending.join(", ")}) — an unlabeled paste cannot tell which one you meant. ` +
+		"Label the moves (`CUT … @name` → `PUT … @name`), or keep at most one unlabeled `CUT` before each unlabeled paste."
+	);
+}
 
 /**
  * Clipboard ops inside a same-path section that was merged across another
@@ -287,10 +351,11 @@ export const EMPTY_PASTE = `\`PASTE\` found nothing in the clipboard. Ops run to
  * an interleaved layout would silently reorder the register sequence.
  */
 export const CLIPBOARD_INTERLEAVED_SECTIONS =
-	"`CUT`/`PASTE` cannot be used in a file whose sections are interleaved with another file's: same-path sections merge into the first occurrence, which would reorder the clipboard sequence. Keep each file's ops under ONE `[path#TAG]` header.";
+	"`CUT`/register-`PUT` ops cannot be used in a file whose sections are interleaved with another file's: same-path sections merge into the first occurrence, which would reorder the register sequence. Keep each file's ops under ONE `[path#TAG]` header.";
 
-/** Insert hunk with no body. */
-export const EMPTY_INSERT = "`INS` needs at least one `+TEXT` body row.";
+/** Gap `PUT` with `:` but no body. */
+export const EMPTY_INSERT =
+	"`PUT <N:` / `PUT >N:` promises body rows and got none. Write `+TEXT` rows, or drop the `:` to paste a register (`PUT >N` = anonymous, `PUT >N @name` = named).";
 
 /**
  * `insert after` body indented shallower than the anchor: the landing slid
@@ -298,16 +363,16 @@ export const EMPTY_INSERT = "`INS` needs at least one `+TEXT` body row.";
  * I read instead of after the block" mistake.
  */
 export function afterInsertLandingShiftWarning(anchorLine: number, landingLine: number, crossed: number): string {
-	return `INS.POST ${anchorLine}: body indented shallower than the anchor, so the landing moved past ${crossed} closing line${crossed === 1 ? "" : "s"} to after line ${landingLine}. For the deeper position inside the block, re-issue with the body indented to match.`;
+	return `PUT >${anchorLine}: body indented shallower than the anchor, so the landing moved past ${crossed} closing line${crossed === 1 ? "" : "s"} to after line ${landingLine}. For the deeper position inside the block, re-issue with the body indented to match.`;
 }
 
 /**
- * `insert_after_block N:` body indented deeper than the block's closer: the
- * landing was pulled inside the block — a deeper body almost always means
- * "append inside the block's body".
+ * `PUT >N*:` body indented deeper than the block's closer: the landing was
+ * pulled inside the block — a deeper body almost always means "append inside
+ * the block's body".
  */
 export function blockInsertLandingShiftWarning(blockStart: number, closerLine: number, landingLine: number): string {
-	return `INS.BLK.POST ${blockStart}: body indented deeper than closing line ${closerLine}, so it was placed inside the block, after line ${landingLine}. \`INS.BLK.POST\` lands AFTER the block at sibling depth — if inside was intended, use plain \`INS.POST ${closerLine}:\`.`;
+	return `PUT >${blockStart}*: body indented deeper than closing line ${closerLine}, so it was placed inside the block, after line ${landingLine}. \`PUT >N*\` lands AFTER the block at sibling depth — if inside was intended, use plain \`PUT >${closerLine}:\`.`;
 }
 
 /** `Recovery`: an external write matched a cached snapshot. */
@@ -328,7 +393,7 @@ export const RECOVERY_LINE_REMAP_WARNING =
  * onto live content and warn instead of hard-failing.
  */
 export const HEADTAIL_DRIFT_WARNING =
-	"Applied the `INS.HEAD:`/`INS.TAIL:` edit despite a stale snapshot tag (file changed since your read) — head/tail position is content-independent. Re-read if the drift was unexpected.";
+	"Applied the `PUT <1:`/`PUT >$:` edit despite a stale snapshot tag (file changed since your read) — head/tail position is content-independent. Re-read if the drift was unexpected.";
 
 /**
  * The `Filesystem` reported that what actually landed on disk differs from
@@ -457,11 +522,11 @@ export function unseenLinesMessage(
 export type BlockOp = "replace" | "insert_after" | "cut" | "paste_after";
 
 /** Display forms per deferred-block op: block keyword, trailing colon, and single-line plain form. */
-const BLOCK_OP_FORMS: Record<BlockOp, { keyword: string; colon: string; plain: (line: number) => string }> = {
-	replace: { keyword: "SWAP.BLK", colon: ":", plain: line => `SWAP ${line}${HL_RANGE_SEP}${line}:` },
-	insert_after: { keyword: "INS.BLK.POST", colon: ":", plain: line => `INS.POST ${line}:` },
-	cut: { keyword: "CUT.BLK", colon: "", plain: line => `CUT ${line}` },
-	paste_after: { keyword: "PASTE.BLK.POST", colon: "", plain: line => `PASTE.POST ${line}` },
+const BLOCK_OP_FORMS: Record<BlockOp, { form: (line: number) => string; plain: (line: number) => string }> = {
+	replace: { form: line => `PUT ${line}*:`, plain: line => `PUT ${line}:` },
+	insert_after: { form: line => `PUT >${line}*:`, plain: line => `PUT >${line}:` },
+	cut: { form: line => `CUT ${line}*`, plain: line => `CUT ${line}` },
+	paste_after: { form: line => `PUT >${line}*`, plain: line => `PUT >${line}` },
 };
 
 /**
@@ -473,13 +538,12 @@ export function blockSingleLineMessage(line: number, op: BlockOp, enclosingBlock
 	const forms = BLOCK_OP_FORMS[op];
 	const plainForm = forms.plain(line);
 	let message =
-		`\`${forms.keyword} ${line}\` resolved a single-line block — line ${line} is a bare statement, not the opening line ` +
+		`\`${forms.form(line)}\` resolved a single-line block — line ${line} is a bare statement, not the opening line ` +
 		`of a multi-line construct. For only this statement use \`${plainForm}\`.`;
 	if (enclosingBlock) {
-		const enclosingForm = `${forms.keyword} ${enclosingBlock.start}${forms.colon}`;
 		message +=
 			` The nearest enclosing multi-line block begins at line ${enclosingBlock.start} ` +
-			`and ends at line ${enclosingBlock.end}; use \`${enclosingForm}\` to target it.`;
+			`and ends at line ${enclosingBlock.end}; use \`${forms.form(enclosingBlock.start)}\` to target it.`;
 	}
 	return message;
 }

@@ -281,40 +281,42 @@ function isMutationTool(toolName: unknown): boolean {
 // Pure classification — single shared tokenizer is safe.
 const HASHLINE_OP_TOKENIZER = new HashlineTokenizer();
 
-/** Display label for a hashline op header, e.g. `SWAP.BLK` or `PASTE.POST`. */
-function hashlineOpLabel(target: HashlineBlockTarget): string {
+function hashlinePutSuffix(register: string | undefined, hadColon: boolean, allowsAnonymousPaste: boolean): string {
+	if (register !== undefined) return hadColon ? " @reg: (invalid)" : " @reg";
+	if (hadColon) return ":";
+	return allowsAnonymousPaste ? "" : " (invalid)";
+}
+
+function hashlineCutSuffix(register: string | undefined, hadColon: boolean): string {
+	if (register !== undefined) return hadColon ? " @reg: (invalid)" : " @reg";
+	return hadColon ? ": (invalid)" : "";
+}
+
+/** Display the canonical S3 header shape for a parsed hashline target. */
+function hashlineOpLabel(target: HashlineBlockTarget, hadColon: boolean): string {
 	switch (target.kind) {
-		case "replace":
-			return "SWAP";
+		case "replace": {
+			const locator = target.range.start.line === target.range.end.line ? "N.=N" : "N.=M";
+			return `PUT ${locator}${hashlinePutSuffix(target.register, hadColon, false)}`;
+		}
 		case "block":
-			return "SWAP.BLK";
+			return `PUT N*${hashlinePutSuffix(target.register, hadColon, false)}`;
 		case "insert_before":
-			return "INS.PRE";
+			return `PUT <N${hashlinePutSuffix(target.register, hadColon, true)}`;
 		case "insert_after":
-			return "INS.POST";
+			return `PUT >N${hashlinePutSuffix(target.register, hadColon, true)}`;
 		case "bof":
-			return "INS.HEAD";
+			return `PUT <1${hashlinePutSuffix(target.register, hadColon, true)}`;
 		case "eof":
-			return "INS.TAIL";
+			return `PUT >$${hashlinePutSuffix(target.register, hadColon, true)}`;
 		case "insert_after_block":
-			return "INS.BLK.POST";
-		case "cut":
-			return "CUT";
+			return `PUT >N*${hashlinePutSuffix(target.register, hadColon, true)}`;
+		case "cut": {
+			const locator = target.range.start.line === target.range.end.line ? "N.=N" : "N.=M";
+			return `CUT ${locator}${hashlineCutSuffix(target.register, hadColon)}`;
+		}
 		case "cut_block":
-			return "CUT.BLK";
-		case "paste":
-			switch (target.cursor.kind) {
-				case "before_anchor":
-					return "PASTE.PRE";
-				case "after_anchor":
-					return "PASTE.POST";
-				case "bof":
-					return "PASTE.HEAD";
-				case "eof":
-					return "PASTE.TAIL";
-			}
-		case "paste_after_block":
-			return "PASTE.BLK.POST";
+			return `CUT N*${hashlineCutSuffix(target.register, hadColon)}`;
 		case "rem":
 			return "REM";
 		case "move":
@@ -323,9 +325,9 @@ function hashlineOpLabel(target: HashlineBlockTarget): string {
 }
 
 /**
- * Count hashline op headers (`SWAP`, `CUT.BLK`, `PASTE.POST`, …) in an
- * edit call's patch input. Returns `null` when the args carry no hashline
- * patch — non-hashline edit variants and malformed calls contribute nothing.
+ * Count canonical hashline op header shapes (`PUT N.=M:`, `CUT N*`,
+ * `PUT >N @reg`, …) in an edit call's patch input. Returns `null` when
+ * the args carry no hashline patch; non-hashline variants contribute nothing.
  */
 function countHashlineOps(args: unknown): Record<string, number> | null {
 	if (!args || typeof args !== "object" || !("input" in args)) return null;
@@ -334,7 +336,7 @@ function countHashlineOps(args: unknown): Record<string, number> | null {
 	const counts: Record<string, number> = {};
 	for (const token of HASHLINE_OP_TOKENIZER.tokenizeAll(input)) {
 		if (token.kind !== "op-block") continue;
-		const label = hashlineOpLabel(token.target);
+		const label = hashlineOpLabel(token.target, token.hadColon);
 		counts[label] = (counts[label] ?? 0) + 1;
 	}
 	return Object.keys(counts).length > 0 ? counts : null;
@@ -878,7 +880,7 @@ export interface TaskRunResult {
 	editFailures: EditFailure[];
 	editWarnings: string[];
 	editAutocorrectCount: number;
-	/** Hashline op counts (`SWAP`, `CUT.BLK`, `PASTE.POST`, …) — present when edit calls carried hashline patches. */
+	/** Canonical hashline op-shape counts (`PUT N.=M:`, `CUT N*`, `PUT >N @reg`, …). */
 	hashlineEditSubtypes?: Record<string, number>;
 	mutationIntentMatched?: boolean;
 	mutationIntentReason?: string;
@@ -994,7 +996,7 @@ export interface BenchmarkSummary {
 	mutationIntentMatchRate?: number;
 	/** Edit failure categories across all runs. */
 	editFailureCategories: Record<EditFailureCategory, number>;
-	/** Hashline op totals across all runs — present when any run's edit calls carried hashline patches. */
+	/** Canonical hashline op totals across all runs when edit calls carried hashline patches. */
 	hashlineEditSubtypes?: Record<string, number>;
 }
 
@@ -1988,7 +1990,7 @@ export function buildBenchmarkResult(params: {
 	// Op counts aggregate every attempted edit call across ALL runs (retries and
 	// failed calls included) — deliberately: the mix shows what the model reaches
 	// for, not just what landed. Best-run-only would hide exactly the flailing
-	// (failed SWAPs before a successful retry) this table exists to expose.
+	// (failed operations before a successful retry) this table exists to expose.
 	const hashlineEditSubtypeTotals: Record<string, number> = {};
 	for (const run of allRuns) {
 		const runOps = run.hashlineEditSubtypes;

@@ -36,6 +36,18 @@ export function escapeHarmonyControlTokens(text: string): string {
 }
 
 /**
+ * Escape reserved Harmony control tokens inside a JSON document string (e.g.
+ * `function_call.arguments`). Doubles the backslash so the document remains
+ * valid JSON whose *decoded* strings carry the inert `<\|token\|>` spelling.
+ * `<|` cannot occur outside a string literal in valid JSON, so the blanket
+ * replace never corrupts structure; malformed documents are escaped
+ * best-effort.
+ */
+export function escapeHarmonyControlTokensInJson(text: string): string {
+	return text.replace(HARMONY_CONTROL_TOKEN_ESCAPE_RE, "<\\\\|$1\\\\|>");
+}
+
+/**
  * Whether requests to `model` are served by a Harmony-dialect backend
  * (gpt-5.x / gpt-oss), which rejects reserved control-token spellings appearing
  * as data in the request. Resolves the wire model id (`requestModelId ?? id`)

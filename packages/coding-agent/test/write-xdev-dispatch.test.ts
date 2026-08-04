@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -22,7 +23,6 @@ import {
 	xdevEntries,
 } from "@oh-my-pi/pi-coding-agent/tools/xdev";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 
 // xdev mounting is default-on: discoverable tools like ast_edit unmount into
 // xd://, and a plain `write xd://ast_edit` dispatches them. These guard the
@@ -96,6 +96,9 @@ describe("read and write route xd:// device URLs", () => {
 			expect(previewResult.isError).toBeUndefined();
 			expect(previewResult.details?.xdev?.tool).toBe("ast_edit");
 			expect(previewResult.details?.xdev?.mode).toBe("execute");
+			// The dispatch records the wrapped tool's approval tier so prewalk can
+			// tell a mutation from a read-only device call (issue #7312).
+			expect(previewResult.details?.xdev?.tier).toBe("write");
 			const previewText = previewResult.content.find(entry => entry.type === "text")?.text ?? "";
 			expect(previewText).toContain("modernWrap");
 
@@ -107,6 +110,63 @@ describe("read and write route xd:// device URLs", () => {
 		} finally {
 			await removeWithRetries(tempDir);
 		}
+	});
+
+	it("records a read tier on the dispatch of a read-only device", async () => {
+		const readDevice: AgentTool = {
+			name: "peek",
+			label: "Peek",
+			description: "Read-only device",
+			parameters: type({ q: "string" }),
+			approval: () => "read",
+			async execute() {
+				return { content: [{ type: "text", text: "peeked" }] };
+			},
+		};
+		const xdev = createTestXdevState([readDevice]);
+		const write = new WriteTool(xdevSession(process.cwd(), { xdev }));
+
+		const result = await write.execute("write-xdev-read", { path: "xd://peek", content: JSON.stringify({ q: "x" }) });
+		expect(result.isError).toBeUndefined();
+		expect(result.details?.xdev).toMatchObject({ tool: "peek", mode: "execute", tier: "read" });
+	});
+
+	it("records the effective tier reported after an execution decorator rewrites device args", async () => {
+		let executedQuery: string | undefined;
+		const device: AgentTool = {
+			name: "peek",
+			label: "Peek",
+			description: "Argument-dependent device",
+			parameters: type({ q: "string" }),
+			approval: args => (args && typeof args === "object" && "q" in args && args.q === "mutate" ? "write" : "read"),
+			async execute(_id, args) {
+				if (!args || typeof args !== "object" || !("q" in args) || typeof args.q !== "string") {
+					throw new Error("Expected a string query");
+				}
+				executedQuery = args.q;
+				return { content: [{ type: "text", text: "done" }] };
+			},
+		};
+		const xdev = createTestXdevState([device]);
+		xdev.decorateExecution = canonical => ({
+			...canonical,
+			async execute(id, _args, signal, onUpdate, context) {
+				const revised = { q: "mutate" };
+				context?.xdevTierResolved?.("write");
+				return canonical.execute(id, revised as never, signal, onUpdate, context);
+			},
+		});
+		const write = new WriteTool(xdevSession(process.cwd(), { xdev }));
+
+		const result = await write.execute(
+			"write-xdev-revised",
+			{ path: "xd://peek", content: JSON.stringify({ q: "inspect" }) },
+			undefined,
+			undefined,
+			{} as never,
+		);
+		expect(executedQuery).toBe("mutate");
+		expect(result.details?.xdev?.tier).toBe("write");
 	});
 
 	it("rejects near-miss xd addresses before filesystem fallback", async () => {

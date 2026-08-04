@@ -17,6 +17,229 @@ describe("Agent", () => {
 		expect(agent.state.messages).not.toContainEqual(message);
 	});
 
+	it("classifies agent-authored steering as a parent steering message", async () => {
+		const toolSchema = z.object({ value: z.string() });
+		const executed: string[] = [];
+		let agent: Agent;
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			concurrency: "exclusive",
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				if (params.value === "first") {
+					agent.steer({
+						role: "user",
+						content: "parent steering",
+						attribution: "agent",
+						timestamp: Date.now(),
+					});
+				}
+				return {
+					content: [{ type: "text", text: `ok:${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "first" } },
+						{ type: "toolCall", id: "tool-2", name: "echo", arguments: { value: "second" } },
+					],
+				},
+				{ content: ["done"] },
+			],
+		});
+		agent = new Agent({
+			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
+			streamFn: mock.stream,
+			interruptMode: "immediate",
+		});
+		const events: AgentEvent[] = [];
+		const unsubscribe = agent.subscribe(event => events.push(event));
+
+		await agent.prompt("start");
+		unsubscribe();
+
+		expect(executed).toEqual(["first"]);
+		const skipped = events.find(
+			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+				event.type === "tool_execution_end" && event.toolCallId === "tool-2",
+		);
+		expect(skipped).toBeDefined();
+		const skippedContent = skipped?.result.content[0];
+		expect(skippedContent?.type).toBe("text");
+		if (skippedContent?.type !== "text") throw new Error("skipped tool result must be text");
+		expect(skippedContent.text).toContain("Skipped due to pending parent steering message");
+		expect(skippedContent.text).toContain("After the steering message is handled on the next step");
+		expect(skippedContent.text).not.toContain("pending system advisory");
+		expect(skippedContent.text).not.toContain("queued user message");
+	});
+
+	it("classifies user-attributed custom steering as a queued user message", async () => {
+		const toolSchema = z.object({ value: z.string() });
+		const executed: string[] = [];
+		let agent: Agent;
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			concurrency: "exclusive",
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				if (params.value === "first") {
+					agent.steer({
+						role: "custom",
+						customType: "visible-user-steer",
+						content: "visible custom steering",
+						display: true,
+						attribution: "user",
+						timestamp: Date.now(),
+					});
+					agent.steer({
+						role: "user",
+						content: "normal user steering",
+						timestamp: Date.now(),
+					});
+				}
+				return {
+					content: [{ type: "text", text: `ok:${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "first" } },
+						{ type: "toolCall", id: "tool-2", name: "echo", arguments: { value: "second" } },
+					],
+				},
+				{ content: ["done"] },
+				{ content: ["done"] },
+			],
+		});
+		agent = new Agent({
+			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
+			streamFn: mock.stream,
+			steeringMode: "one-at-a-time",
+			interruptMode: "immediate",
+		});
+		const events: AgentEvent[] = [];
+		const unsubscribe = agent.subscribe(event => events.push(event));
+
+		await agent.prompt("start");
+		unsubscribe();
+
+		expect(executed).toEqual(["first"]);
+		const skipped = events.find(
+			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+				event.type === "tool_execution_end" && event.toolCallId === "tool-2",
+		);
+		expect(skipped).toBeDefined();
+		const skippedContent = skipped?.result.content[0];
+		expect(skippedContent?.type).toBe("text");
+		if (skippedContent?.type !== "text") throw new Error("skipped tool result must be text");
+		expect(skippedContent.text).toContain("Skipped due to queued user message");
+		expect(skippedContent.text).not.toContain("pending system advisory");
+	});
+
+	it("classifies one-at-a-time steering from the next queued mixed source", async () => {
+		const cases = [
+			{
+				order: ["system", "agent"] as const,
+				expected: "pending system advisory",
+				unexpected: "pending parent steering message",
+			},
+			{
+				order: ["agent", "system"] as const,
+				expected: "pending parent steering message",
+				unexpected: "pending system advisory",
+			},
+		];
+
+		for (const scenario of cases) {
+			const toolSchema = z.object({ value: z.string() });
+			const executed: string[] = [];
+			let agent: Agent;
+			const tool: AgentTool<typeof toolSchema, { value: string }> = {
+				name: "echo",
+				label: "Echo",
+				description: "Echo tool",
+				parameters: toolSchema,
+				concurrency: "exclusive",
+				async execute(_toolCallId, params) {
+					executed.push(params.value);
+					if (params.value === "first") {
+						for (const source of scenario.order) {
+							if (source === "agent") {
+								agent.steer({
+									role: "user",
+									content: "parent steering",
+									attribution: "agent",
+									timestamp: Date.now(),
+								});
+							} else {
+								agent.steer({
+									role: "custom",
+									customType: "advisor",
+									content: "advisor steering",
+									display: true,
+									attribution: "agent",
+									timestamp: Date.now(),
+								});
+							}
+						}
+					}
+					return {
+						content: [{ type: "text", text: `ok:${params.value}` }],
+						details: { value: params.value },
+					};
+				},
+			};
+			const mock = createMockModel({
+				responses: [
+					{
+						content: [
+							{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "first" } },
+							{ type: "toolCall", id: "tool-2", name: "echo", arguments: { value: "second" } },
+						],
+					},
+					{ content: ["done"] },
+					{ content: ["done"] },
+				],
+			});
+			agent = new Agent({
+				initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
+				streamFn: mock.stream,
+				interruptMode: "immediate",
+			});
+			const events: AgentEvent[] = [];
+			const unsubscribe = agent.subscribe(event => events.push(event));
+
+			await agent.prompt("start");
+			unsubscribe();
+
+			expect(executed).toEqual(["first"]);
+			const skipped = events.find(
+				(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+					event.type === "tool_execution_end" && event.toolCallId === "tool-2",
+			);
+			expect(skipped).toBeDefined();
+			const skippedContent = skipped?.result.content[0];
+			expect(skippedContent?.type).toBe("text");
+			if (skippedContent?.type !== "text") throw new Error("skipped tool result must be text");
+			expect(skippedContent.text).toContain(`Skipped due to ${scenario.expected}`);
+			expect(skippedContent.text).not.toContain(scenario.unexpected);
+		}
+	});
+
 	it("continue() should process queued follow-up messages after an assistant turn", async () => {
 		const mock = createMockModel({ responses: [{ content: ["Processed"] }] });
 		const agent = new Agent({ streamFn: mock.stream });

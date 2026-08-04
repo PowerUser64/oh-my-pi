@@ -115,7 +115,7 @@ interface EditRenderArgs {
 	patch?: string;
 	input?: string;
 	_input?: string;
-	all?: boolean;
+	replace_all?: boolean;
 	// Patch mode fields
 	op?: Operation;
 	rename?: unknown;
@@ -140,7 +140,7 @@ interface HashlineInputEntry {
 	path: string;
 	op?: Operation;
 	rename?: string;
-	/** A SWAP/CUT/INS line-editing op precedes the file op — keeps a move framed. */
+	/** A PUT/CUT line edit precedes the file op — keeps a move framed. */
 	hasLineEdits?: boolean;
 }
 
@@ -568,9 +568,9 @@ function parseHashlineInputPreviewHeader(line: string): string | null {
 	return previewPath.length > 0 ? previewPath : null;
 }
 
-// Line-editing op headers (SWAP/CUT/INS family), distinct from file-level
+// Line-editing op headers (PUT/CUT family), distinct from file-level
 // REM/MV ops. Body rows are `+TEXT`, so this only matches real headers.
-const HL_LINE_OP_HEADER = /^(?:SWAP|CUT|INS)\b/;
+const HL_LINE_OP_HEADER = /^(?:PUT|CUT)\b/;
 
 /**
  * Walk a (possibly mid-stream) hashline payload into per-section descriptors:

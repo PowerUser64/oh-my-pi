@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -10,8 +10,13 @@ import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { resolveOllamaModelCacheProviderId } from "@oh-my-pi/pi-catalog/provider-models";
 import type { ModelSpec, OpenAICompat } from "@oh-my-pi/pi-catalog/types";
-import { applyLlamaCppQwenThinking, discoveryProbeTimeoutMs } from "@oh-my-pi/pi-coding-agent/config/model-discovery";
+import {
+	applyLlamaCppQwenThinking,
+	discoverOllamaModels,
+	discoveryProbeTimeoutMs,
+} from "@oh-my-pi/pi-coding-agent/config/model-discovery";
 import { kNoAuth, ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { ProviderDiscoverySchema } from "@oh-my-pi/pi-coding-agent/config/models-config-schema";
 import { resetSettingsForTest } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
@@ -154,7 +159,7 @@ describe("ModelRegistry runtime discovery", () => {
 		const endpointPrefix = "https://api.anthropic.com/";
 		return async (input, init) => {
 			const url = String(input);
-			if (url === "https://models.dev/api.json") {
+			if (url === "https://catalog.stencil.so/models.json.zstd") {
 				return Response.json({});
 			}
 			if (url.startsWith(endpointPrefix) && url.endsWith("/models")) {
@@ -1160,6 +1165,82 @@ describe("ModelRegistry runtime discovery", () => {
 		expect((plain?.compat as DialectFields | undefined)?.reasoningDisableMode).not.toBe("qwen-template-false");
 	});
 
+	test("discovery timeout rejects even when fetch ignores abort", async () => {
+		vi.useFakeTimers();
+		try {
+			const pending = Promise.withResolvers<Response>();
+			let outcome: string | undefined;
+			void discoverOllamaModels(
+				{
+					provider: "ollama",
+					api: "openai-responses",
+					baseUrl: "http://127.0.0.1:11434",
+					discovery: { type: "ollama", timeoutMs: 25 },
+					optional: true,
+				},
+				{
+					fetch: () => pending.promise,
+					getBearerApiKeyResolver: async () => undefined,
+				},
+			).then(
+				() => {
+					outcome = "resolved";
+				},
+				error => {
+					outcome = error instanceof DOMException ? error.name : String(error);
+				},
+			);
+
+			vi.advanceTimersByTime(25);
+			for (let flush = 0; flush < 5; flush++) await Promise.resolve();
+
+			expect(outcome).toBe("TimeoutError");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("configured provider discovery accepts timeoutMs and passes it to probes", async () => {
+		const customConfigPath = path.join(tempDir, "models.yml");
+		fs.writeFileSync(
+			customConfigPath,
+			`
+providers:
+  custom-remote:
+    baseUrl: "http://127.0.0.1:8080"
+    api: "openai-completions"
+    auth: "none"
+    discovery:
+      type: "llama.cpp"
+      timeoutMs: 45000
+`,
+			"utf-8",
+		);
+
+		const fetchMock: FetchImpl = async input => {
+			const url = String(input);
+			if (url === "http://127.0.0.1:8080/models") {
+				return new Response(JSON.stringify({ data: [{ id: "remote-model-1" }] }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			if (url === "http://127.0.0.1:8080/props") {
+				return new Response(JSON.stringify({ default_generation_settings: { n_ctx: 32768 } }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			throw new Error(`Unexpected URL: ${url}`);
+		};
+
+		const registry = new ModelRegistry(authStorage, customConfigPath, { fetch: fetchMock });
+		await registry.refresh();
+		const state = registry.getProviderDiscoveryState("custom-remote");
+		expect(state?.status).toBe("ok");
+		const models = getModelsForProvider(registry, "custom-remote");
+		expect(models.map(m => m.id)).toEqual(["remote-model-1"]);
+	});
 	test("configured llama.cpp Qwen model keeps its /v1 runtime URL despite a native-root baseUrl override", async () => {
 		writeRawModelsJson({
 			"llama.cpp": {
@@ -1269,6 +1350,23 @@ describe("ModelRegistry runtime discovery", () => {
 		expect(discoveryProbeTimeoutMs("http://remote-llama.test:8080", 150)).toBe(remoteBudgets[0]);
 	});
 
+	test("discoveryProbeTimeoutMs uses explicit customTimeoutMs when provided", () => {
+		expect(discoveryProbeTimeoutMs("http://127.0.0.1:8080", 250, 30_000)).toBe(30_000);
+		expect(discoveryProbeTimeoutMs("http://remote-llama.test:8080", 250, 30_000)).toBe(30_000);
+		expect(discoveryProbeTimeoutMs("http://127.0.0.1:8080", 250, 5_000)).toBe(5_000);
+		// Invalid custom timeouts fall back to standard loopback/remote resolution
+		expect(discoveryProbeTimeoutMs("http://127.0.0.1:8080", 250, -100)).toBe(250);
+		expect(discoveryProbeTimeoutMs("http://127.0.0.1:8080", 250, 0)).toBe(250);
+	});
+
+	test("ProviderDiscoverySchema validates timeoutMs", () => {
+		expect(ProviderDiscoverySchema.allows({ type: "llama.cpp", timeoutMs: 30_000 })).toBe(true);
+		expect(ProviderDiscoverySchema.allows({ type: "ollama", timeoutMs: 5_000 })).toBe(true);
+		expect(ProviderDiscoverySchema.allows({ type: "llama.cpp", timeoutMs: -500 })).toBe(false);
+		expect(ProviderDiscoverySchema.allows({ type: "llama.cpp", timeoutMs: 0 })).toBe(false);
+		expect(ProviderDiscoverySchema.allows({ type: "llama.cpp", timeoutMs: Number.NaN })).toBe(false);
+		expect(ProviderDiscoverySchema.allows({ type: "llama.cpp", timeoutMs: "30000" as any })).toBe(false);
+	});
 	test("llama.cpp discovery marks per-model architecture image modalities as vision-capable", async () => {
 		const fetchMock: FetchImpl = async input => {
 			const url = String(input);
@@ -1870,6 +1968,9 @@ describe("ModelRegistry runtime discovery", () => {
 
 	test("llama.cpp selected model refresh does not resolve command api keys", async () => {
 		const commandLogPath = path.join(tempDir, "llama-cpp-key-command.log");
+		// Pre-create so the before/after comparison works whether or not
+		// registry construction happens to invoke the key command itself.
+		fs.writeFileSync(commandLogPath, "");
 		writeRawModelsJson({
 			"llama.cpp": {
 				baseUrl: "http://127.0.0.1:8080",

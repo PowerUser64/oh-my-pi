@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as tls from "node:tls";
+import { type as arkType } from "@oh-my-pi/omptype";
 import { Effort } from "@oh-my-pi/pi-ai";
 import {
 	applyClaudeToolPrefix,
@@ -32,7 +33,6 @@ import type {
 } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
-import { type as arkType } from "arktype";
 import { withEnv } from "./helpers";
 
 const ANTHROPIC_MODEL_SPEC: ModelSpec<"anthropic-messages"> = {
@@ -234,7 +234,11 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(hiddenUtility.defaultHeaders["anthropic-beta"]).not.toContain("redact-thinking-2026-02-12");
 	});
 
-	it("adds Cowork's context-1m beta for million-token models", () => {
+	it("never advertises context-1m on OAuth requests for million-token models (#7238)", () => {
+		// OAuth subscription credentials have no long-context credit balance, so
+		// advertising `context-1m-2025-08-07` hard-429s beta-gated 1M models
+		// ("Usage credits are required for long context requests") regardless of
+		// prompt size, breaking every subagent on Claude Pro/Max.
 		const longContextModel = buildModel({
 			...ANTHROPIC_MODEL_SPEC,
 			id: "claude-opus-5",
@@ -250,15 +254,12 @@ describe("Anthropic request fingerprint alignment", () => {
 		});
 
 		expect(options.defaultHeaders["anthropic-beta"]).toBe(
-			"claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,fallback-credit-2026-06-01",
+			"claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,fallback-credit-2026-06-01",
 		);
+		expect(options.defaultHeaders["anthropic-beta"]).not.toContain("context-1m-2025-08-07");
 	});
 
-	it("matches Cowork's system-block layout: billing and instruction uncached, single breakpoint on the last context block", () => {
-		// Cowork's billing+instruction system layout does not emit the
-		// `prompt-caching-scope-2026-01-05` only works against canonical
-		// `api.anthropic.com`, and third-party Anthropic-compatible proxies
-		// (z.ai, openrouter, …) reject the unknown field outright.
+	it("caches the stable prefix and the trailing block while leaving billing + CC identity uncached", () => {
 		const blocks = buildAnthropicSystemBlocks(["Stay concise."], {
 			includeClaudeCodeInstruction: true,
 			extraInstructions: ["Use citations when possible"],
@@ -266,20 +267,77 @@ describe("Anthropic request fingerprint alignment", () => {
 		});
 
 		expect(blocks).toHaveLength(4);
+		// OAuth cloak blocks stay uncached: the billing header is a per-request
+		// fingerprint and the CC identity block mimics Claude Code.
 		expect(blocks?.[0].text).toStartWith("x-anthropic-billing-header:");
 		expect(blocks?.[0].cache_control).toBeUndefined();
 		expect(blocks?.[1].text).toBe(claudeCodeSystemInstruction);
 		expect(blocks?.[1].cache_control).toBeUndefined();
-		// Only the LAST system block carries the cache breakpoint: a single trailing
-		// `cache_control` caches the entire system prefix as one entry, conserving the
-		// 4-breakpoint budget (`enforceCacheControlLimit`) for message-level caching.
+		// Stable-prefix breakpoint on the block before the trailing footer, plus a
+		// full-match breakpoint on the trailing block itself (#7324).
 		expect(blocks?.[2]).toEqual({
 			type: "text",
 			text: "Use citations when possible",
+			cache_control: { type: "ephemeral" },
 		});
 		expect(blocks?.[3]).toEqual({
 			type: "text",
 			text: "Stay concise.",
+			cache_control: { type: "ephemeral" },
+		});
+	});
+
+	it("keeps the stable-prefix breakpoint when the trailing project footer (cwd/date) changes (#7324)", () => {
+		const staticInstructions = "STATIC INSTRUCTIONS BLOCK";
+		const runA = buildAnthropicSystemBlocks([staticInstructions, "PROJECT\nToday is 2026-08-01, cwd '/tmp/a'."], {
+			includeClaudeCodeInstruction: true,
+			cacheControl: { type: "ephemeral" },
+		});
+		const runB = buildAnthropicSystemBlocks([staticInstructions, "PROJECT\nToday is 2026-08-02, cwd '/tmp/b'."], {
+			includeClaudeCodeInstruction: true,
+			cacheControl: { type: "ephemeral" },
+		});
+
+		for (const blocks of [runA, runB]) {
+			expect(blocks).toHaveLength(4);
+			expect(blocks?.[0].cache_control).toBeUndefined();
+			expect(blocks?.[1].cache_control).toBeUndefined();
+			// The static block carries a breakpoint whose prefix excludes the
+			// volatile footer, so a cwd/date change reuses it instead of
+			// re-writing the whole system cache.
+			expect(blocks?.[2].text).toBe(staticInstructions);
+			expect(blocks?.[2].cache_control).toEqual({ type: "ephemeral" });
+			expect(blocks?.[3].cache_control).toEqual({ type: "ephemeral" });
+		}
+		expect(runA?.[2].text).toBe(runB?.[2].text);
+	});
+
+	it("caches before the project footer when active-repo context follows it (#7324)", () => {
+		const staticInstructions = "STATIC INSTRUCTIONS BLOCK";
+		const projectFooter = "PROJECT\nToday is 2026-08-01, cwd '/tmp'.";
+		const activeRepoContext = "The active repository is './repo'.";
+		const blocks = buildAnthropicSystemBlocks([staticInstructions, projectFooter, activeRepoContext], {
+			includeClaudeCodeInstruction: true,
+			cacheControl: { type: "ephemeral" },
+		});
+
+		// blocks: [billing, CC identity, static, project footer, active-repo context]
+		expect(blocks).toHaveLength(5);
+		expect(blocks?.[0].cache_control).toBeUndefined();
+		expect(blocks?.[1].cache_control).toBeUndefined();
+		expect(blocks?.[2]).toEqual({
+			type: "text",
+			text: staticInstructions,
+			cache_control: { type: "ephemeral" },
+		});
+		expect(blocks?.[3]).toEqual({
+			type: "text",
+			text: projectFooter,
+			cache_control: { type: "ephemeral" },
+		});
+		expect(blocks?.[4]).toEqual({
+			type: "text",
+			text: activeRepoContext,
 			cache_control: { type: "ephemeral" },
 		});
 	});
@@ -300,6 +358,26 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.system?.[2]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
 		const content = payload.messages?.[0]?.content;
 		expect(Array.isArray(content)).toBe(true);
+		expect(Array.isArray(content) ? content[0]?.cache_control : undefined).toEqual({
+			type: "ephemeral",
+			ttl: "1h",
+		});
+	});
+
+	it("never caches OAuth cloak blocks when no caller system prompt exists", async () => {
+		const payload = (await captureAnthropicPayload(ANTHROPIC_MODEL, {
+			messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+		})) as {
+			system?: Array<{ text?: string; cache_control?: unknown }>;
+			messages?: Array<{ content?: Array<{ cache_control?: unknown }> | string }>;
+		};
+
+		expect(payload.system).toHaveLength(2);
+		expect(payload.system?.[0]?.text).toStartWith("x-anthropic-billing-header:");
+		expect(payload.system?.[0]?.cache_control).toBeUndefined();
+		expect(payload.system?.[1]?.text).toBe(claudeCodeSystemInstruction);
+		expect(payload.system?.[1]?.cache_control).toBeUndefined();
+		const content = payload.messages?.[0]?.content;
 		expect(Array.isArray(content) ? content[0]?.cache_control : undefined).toEqual({
 			type: "ephemeral",
 			ttl: "1h",
@@ -408,9 +486,9 @@ describe("Anthropic request fingerprint alignment", () => {
 			{ isOAuth: false },
 		)) as { messages?: Array<{ role: string; content: string | Array<{ type: string; cache_control?: unknown }> }> };
 
-		// The thinking-only assistant turn sits inside the trailing two-message
-		// cache window (the Continue. pad is appended after it) but must not get
-		// a breakpoint — Anthropic rejects cache_control on thinking blocks.
+		// The thinking-only assistant cannot accept cache_control, so the
+		// preceding real user turn gets the fallback breakpoint. The synthetic
+		// trailing Continue. pad must never consume it.
 		const assistant = payload.messages?.find(message => message.role === "assistant");
 		expect(assistant).toBeDefined();
 		const assistantContent = assistant?.content;
@@ -418,11 +496,52 @@ describe("Anthropic request fingerprint alignment", () => {
 		for (const block of (assistantContent ?? []) as Array<{ type: string; cache_control?: unknown }>) {
 			expect(block.cache_control).toBeUndefined();
 		}
+		const user = payload.messages?.[0];
+		const userContent = user?.content;
+		expect(Array.isArray(userContent)).toBe(true);
+		expect(Array.isArray(userContent) ? userContent[0]?.cache_control : undefined).toBeDefined();
 		const last = payload.messages?.at(-1);
-		expect(last).toBeDefined();
-		const lastContent = last?.content;
-		expect(Array.isArray(lastContent)).toBe(true);
-		expect((lastContent as Array<{ cache_control?: unknown }>)[0]?.cache_control).toBeDefined();
+		expect(last?.content).toBe("Continue.");
+	});
+
+	it("caches the real assistant before a synthetic Continue pad when the breakpoint budget is tight", async () => {
+		const assistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "real assistant answer" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: ANTHROPIC_MODEL.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["stable system", "volatile project footer", "active repo context"],
+				messages: [{ role: "user", content: "question", timestamp: Date.now() }, assistant],
+			},
+			{ isOAuth: false },
+		)) as {
+			system?: Array<{ cache_control?: unknown }>;
+			messages?: Array<{ role: string; content: string | Array<{ cache_control?: unknown }> }>;
+		};
+
+		expect(payload.system?.filter(block => block.cache_control != null)).toHaveLength(3);
+		const assistantContent = payload.messages?.find(message => message.role === "assistant")?.content;
+		expect(Array.isArray(assistantContent) ? assistantContent[0]?.cache_control : undefined).toEqual({
+			type: "ephemeral",
+			ttl: "1h",
+		});
+		const pad = payload.messages?.at(-1);
+		expect(pad?.content).toBe("Continue.");
 	});
 
 	it("adds effort and mid-conversation betas to API-key requests that use those features", async () => {
@@ -713,7 +832,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(extractSuffix(billingWithDev)).toBe(extractSuffix(billingUserOnly));
 	});
 
-	it("places the automatic Anthropic cache breakpoint on the last ordered system prompt", async () => {
+	it("caches the trailing and stable-prefix system blocks on API-key requests (#7324)", async () => {
 		const payload = (await captureAnthropicPayload(
 			ANTHROPIC_MODEL,
 			{
@@ -724,7 +843,8 @@ describe("Anthropic request fingerprint alignment", () => {
 		)) as { system?: Array<{ type: string; text?: string; cache_control?: unknown }> };
 
 		expect(payload.system).toEqual([
-			{ type: "text", text: "stable system" },
+			// Stable-prefix breakpoint: reused when the trailing block changes.
+			{ type: "text", text: "stable system", cache_control: { type: "ephemeral", ttl: "1h" } },
 			// Canonical Anthropic API-key requests default to the 1h breakpoint.
 			{ type: "text", text: "stable durable context", cache_control: { type: "ephemeral", ttl: "1h" } },
 		]);

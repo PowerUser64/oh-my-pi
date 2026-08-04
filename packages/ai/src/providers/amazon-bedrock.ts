@@ -10,9 +10,10 @@
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { mapEffortToAnthropicAdaptiveEffort, requireSupportedEffort } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
-import { $env, $flag, fetchWithRetry, parseStreamingJson, parseStreamingJsonThrottled } from "@oh-my-pi/pi-utils";
+import { $flag, fetchWithRetry, parseStreamingJson, parseStreamingJsonThrottled } from "@oh-my-pi/pi-utils";
 import { renderDemotedThinking } from "../dialect/demotion";
 import * as AIError from "../error";
+import { resolveAwsBearerToken } from "../registry/aws";
 import type {
 	Api,
 	AssistantMessage,
@@ -30,6 +31,7 @@ import type {
 	ToolResultMessage,
 } from "../types";
 import { normalizeSystemPrompts, normalizeToolCallId, resolveCacheRetention } from "../utils";
+import { resolveAwsAmbientRegion } from "../utils/aws-profile";
 import {
 	clearStreamingPartialJson,
 	kStreamingBlockIndex,
@@ -74,11 +76,9 @@ export interface BedrockOptions extends StreamOptions {
 	 */
 	thinkingDisplay?: BedrockThinkingDisplay;
 }
-const AUTHENTICATED_API_KEY_SENTINEL = "<authenticated>";
 
 function resolveBearerToken(options: BedrockOptions): string | undefined {
-	const apiKey = options.apiKey === AUTHENTICATED_API_KEY_SENTINEL ? undefined : options.apiKey;
-	return options.bearerToken || apiKey || $env.AWS_BEARER_TOKEN_BEDROCK;
+	return resolveAwsBearerToken(options.apiKey, options.bearerToken);
 }
 
 function inferRegionFromBedrockArn(modelId: string): string | undefined {
@@ -149,7 +149,7 @@ function regionServesGeo(region: string, geo: string): boolean {
 function resolveBedrockRegion(modelId: string, options: BedrockOptions): string {
 	const explicit = options.region || inferRegionFromBedrockArn(modelId);
 	if (explicit) return explicit;
-	const ambient = $env.AWS_REGION || $env.AWS_DEFAULT_REGION;
+	const ambient = resolveAwsAmbientRegion(options.profile);
 	const geo = inferenceProfileGeo(modelId);
 	if (geo) {
 		if (ambient && regionServesGeo(ambient, geo)) return ambient;

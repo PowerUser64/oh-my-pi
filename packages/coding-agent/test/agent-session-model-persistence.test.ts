@@ -209,12 +209,8 @@ describe("AgentSession model persistence", () => {
 
 		const targetWindow = nextModel.contextWindow ?? 0;
 		expect(targetWindow).toBeGreaterThan(0);
-		const overflowTokens = targetWindow + 1;
 
-		const result = await created.session.setModel(nextModel, "default", {
-			persist: true,
-			currentContextTokens: overflowTokens,
-		});
+		const result = await created.session.setModel(nextModel, "default", { persist: true });
 
 		expect(result).toEqual({ switched: true });
 		expect(created.session.model?.id).toBe(nextModel.id);

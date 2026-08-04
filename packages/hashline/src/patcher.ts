@@ -25,7 +25,7 @@
 import * as path from "node:path";
 import { applyEdits } from "./apply";
 import { hasBlockEdit, resolveBlockEdits } from "./block";
-import { commitClipboard, forkClipboard, validateClipboardSequence } from "./clipboard";
+import { commitClipboard, forkClipboard, startClipboardBatch, validateClipboardSequence } from "./clipboard";
 import { computeFileHash, formatHashlineHeader } from "./format";
 import type { Filesystem, WriteResult } from "./fs";
 import { isNotFound } from "./fs";
@@ -161,11 +161,11 @@ export class PreparedSection {
 
 function hasAnchorScopedEdit(edits: readonly Edit[]): boolean {
 	return edits.some(edit => {
-		if (edit.kind === "delete") return true;
-		// A `replace_block N:` edit anchors to concrete content on line N.
-		if (edit.kind === "block") return true;
-		// A `CUT` range reads concrete content.
-		if (edit.kind === "cut") return true;
+		if (edit.kind === "delete" || edit.kind === "block" || edit.kind === "cut") return true;
+		if (edit.kind === "paste") {
+			if (edit.at.kind === "span") return true;
+			return edit.at.cursor.kind === "before_anchor" || edit.at.cursor.kind === "after_anchor";
+		}
 		return edit.cursor.kind === "before_anchor" || edit.cursor.kind === "after_anchor";
 	});
 }
@@ -247,7 +247,7 @@ export class Patcher {
 		// work on a fork and publish it per landed section, so a failed batch
 		// never poisons the persistent register and a mid-batch failure still
 		// preserves content already cut from disk.
-		const clipboard = forkClipboard(this.clipboard);
+		const clipboard = startClipboardBatch(this.clipboard);
 
 		// Single-section fast path.
 		if (patch.sections.length === 1) {
@@ -305,7 +305,7 @@ export class Patcher {
 	 */
 	async preflight(patch: Patch): Promise<void> {
 		// Dry run: fork the register and never publish it back.
-		const clipboard = forkClipboard(this.clipboard);
+		const clipboard = startClipboardBatch(this.clipboard);
 		const prepared: PreparedSection[] = [];
 		for (const section of patch.sections) prepared.push(await this.prepare(section, clipboard));
 		assertUniqueCanonicalPaths(prepared);

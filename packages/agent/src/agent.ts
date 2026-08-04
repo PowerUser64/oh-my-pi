@@ -24,7 +24,6 @@ import {
 } from "@oh-my-pi/pi-ai";
 import type { Dialect } from "@oh-my-pi/pi-ai/dialect";
 import type { HarmonyAuditEvent } from "@oh-my-pi/pi-ai/utils/harmony-leak";
-import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { logger } from "@oh-my-pi/pi-utils";
 import {
@@ -771,12 +770,10 @@ export class Agent {
 		const messages = normalizeMessagesForProvider(llmMessages, model);
 		const tools = ownedDialect
 			? []
-			: (normalizeTools(
-					this.#toolsForModel(model),
-					this.#intentTracing,
-					preferredDialect(model.id),
-					this.#pruneToolDescriptions,
-				) ?? []);
+			: (normalizeTools(this.#toolsForModel(model), {
+					injectIntent: this.#intentTracing,
+					pruneDescriptions: this.#pruneToolDescriptions,
+				}) ?? []);
 		let context: Context = { systemPrompt, messages, tools };
 		if (this.#transformProviderContext) context = await this.#transformProviderContext(context, model);
 		return context;
@@ -1376,14 +1373,22 @@ export class Agent {
 				if (this.#steeringQueue.length === 0) {
 					return { queued: false };
 				}
-				for (const message of this.#steeringQueue) {
+				const messageCount = this.#steeringMode === "one-at-a-time" ? 1 : this.#steeringQueue.length;
+				let hasAgentSteering = false;
+				for (let i = 0; i < messageCount; i++) {
+					const message = this.#steeringQueue[i];
 					const role = "role" in message ? message.role : undefined;
 					const attribution = "attribution" in message ? message.attribution : undefined;
-					if (role === "user" && attribution !== "agent") {
+					if (attribution === "user") {
 						return { queued: true, source: "user" };
 					}
+					if (role !== "user") continue;
+					if (attribution !== "agent") {
+						return { queued: true, source: "user" };
+					}
+					hasAgentSteering = true;
 				}
-				return { queued: true, source: "system" };
+				return { queued: true, source: hasAgentSteering ? "agent" : "system" };
 			},
 			waitForSteeringMessages: signal => this.#waitForSteeringMessages(signal),
 			hasIrcInterrupts: this.hasIrcInterrupts,

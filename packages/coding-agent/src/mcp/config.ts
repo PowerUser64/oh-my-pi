@@ -41,6 +41,7 @@ function convertToLegacyConfig(server: MCPServer): MCPServerConfig {
 	const shared = {
 		enabled: server.enabled,
 		timeout: server.timeout,
+		requestIdFormat: server.requestIdFormat,
 		auth: server.auth,
 		oauth: server.oauth,
 	};

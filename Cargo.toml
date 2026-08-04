@@ -3,7 +3,7 @@ members = ["crates/pi-*", "crates/vendor/*"]
 resolver = "3"
 
 [workspace.package]
-version = "17.2.1"
+version = "17.2.8"
 edition = "2024"
 license = "MIT"
 authors = ["Can Boluk"]
@@ -310,7 +310,7 @@ syntect = { version = "5.3", default-features = false, features = [
 # ──────────────────────────────────────────────────────────────────────────────
 # Markup Conversion
 # ──────────────────────────────────────────────────────────────────────────────
-html-to-markdown-rs = { version = "2.24", default-features = false }
+html-to-markdown-rs = { version = "3.9.2", default-features = false }
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Tokenization

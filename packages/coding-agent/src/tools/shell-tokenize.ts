@@ -81,3 +81,104 @@ export function tokenizeShellSegments(command: string): string[][] {
 	pushSegment();
 	return segments;
 }
+
+/**
+ * Returns the original text of flat shell command segments. Unlike
+ * `tokenizeShellSegments`, this preserves quoting and escaping so the results
+ * are safe to match against user-configured regular expressions.
+ *
+ * The extractor deliberately declines to split syntax whose execution context
+ * cannot be determined with this small scanner (heredocs, command substitution,
+ * backticks, grouping, and malformed quoting). Callers must still check the
+ * complete input in that case.
+ */
+export function extractFlatShellCommandSegments(command: string): string[] {
+	const segments: string[] = [];
+	let segmentStart = 0;
+	let inSingle = false;
+	let inDouble = false;
+	let atWordStart = true;
+
+	const pushSegment = (end: number) => {
+		const segment = command.slice(segmentStart, end).trim();
+		if (segment.length > 0) segments.push(segment);
+	};
+
+	for (let i = 0; i < command.length; i++) {
+		const ch = command[i];
+		if (inSingle) {
+			if (ch === "'") inSingle = false;
+			continue;
+		}
+		if (inDouble) {
+			if (ch === "\\") {
+				if (i + 1 >= command.length) return [];
+				i++;
+				continue;
+			}
+			if (ch === '"') {
+				inDouble = false;
+				continue;
+			}
+			if (ch === "`" || (ch === "$" && command[i + 1] === "(")) return [];
+			continue;
+		}
+
+		if (ch === "'") {
+			inSingle = true;
+			atWordStart = false;
+			continue;
+		}
+		if (ch === '"') {
+			inDouble = true;
+			atWordStart = false;
+			continue;
+		}
+		if (ch === "\\") {
+			if (i + 1 >= command.length) return [];
+			i++;
+			atWordStart = false;
+			continue;
+		}
+		if (
+			ch === "`" ||
+			ch === "(" ||
+			ch === ")" ||
+			(ch === "$" && command[i + 1] === "(") ||
+			(ch === "$" && command[i + 1] === "{") ||
+			(ch === "<" && command[i + 1] === "<") ||
+			((ch === "{" || ch === "}") &&
+				atWordStart &&
+				(command[i + 1] === undefined || /[ \t\n;]/.test(command[i + 1])))
+		) {
+			return [];
+		}
+		if (ch === "#" && atWordStart) {
+			pushSegment(i);
+			const newline = command.indexOf("\n", i + 1);
+			if (newline === -1) return segments;
+			i = newline;
+			segmentStart = newline + 1;
+			atWordStart = true;
+			continue;
+		}
+		const isRedirectionOperatorCharacter =
+			ch === "|"
+				? command[i - 1] === ">"
+				: ch === "&"
+					? command[i - 1] === ">" || command[i - 1] === "<" || command[i + 1] === ">"
+					: false;
+		if ((ch === "\n" || ch === ";" || ch === "|" || ch === "&") && !isRedirectionOperatorCharacter) {
+			pushSegment(i);
+			if ((ch === "|" || ch === "&") && command[i + 1] === ch) i++;
+			segmentStart = i + 1;
+			atWordStart = true;
+			continue;
+		}
+		atWordStart = ch === " " || ch === "\t";
+	}
+
+	if (inSingle || inDouble) return [];
+	pushSegment(command.length);
+	return segments;
+}

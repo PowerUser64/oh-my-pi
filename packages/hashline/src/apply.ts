@@ -14,6 +14,7 @@ import {
 	ambiguousBoundaryEchoMessage,
 	ambiguousCloserSpareMessage,
 	blockInsertLandingShiftWarning,
+	REPLACEMENT_INDENT_AUTO_SHIFT_WARNING,
 	UNRESOLVED_BLOCK_INTERNAL,
 } from "./messages";
 import { cloneCursor } from "./tokenizer";
@@ -388,6 +389,66 @@ function findReplacementGroup(edits: readonly AppliedEdit[], start: number): Rep
 		startLine: anchorLine,
 		endLine: anchorLine + deleteIndices.length - 1,
 	};
+}
+
+/**
+ * Restore a uniformly omitted base indent only when the payload would escape
+ * a surviving `{` opener immediately above the replacement. Matching unchanged
+ * rows then prove the uniform shift; ordinary indentation-only edits stay exact.
+ */
+function repairReplacementIndentation(edits: AppliedEdit[], fileLines: readonly string[]): string[] {
+	let repaired = false;
+	for (let start = 0; start < edits.length; ) {
+		const group = findReplacementGroup(edits, start);
+		if (group === undefined) {
+			start++;
+			continue;
+		}
+		const lastDeleteIndex = group.deleteIndices.at(-1);
+		if (lastDeleteIndex === undefined) continue;
+		start = lastDeleteIndex + 1;
+		if (group.payload.length !== group.deleteIndices.length) continue;
+		const preceding = fileLines[group.startLine - 2] ?? "";
+		const sourceFirst = fileLines[group.startLine - 1] ?? "";
+		const payloadFirst = group.payload[0] ?? "";
+		if (
+			!preceding.trimEnd().endsWith("{") ||
+			!isIndentDeeper(leadingIndent(sourceFirst), leadingIndent(preceding)) ||
+			isIndentDeeper(leadingIndent(payloadFirst), leadingIndent(preceding))
+		) {
+			continue;
+		}
+
+		let shift: string | undefined;
+		let matches = 0;
+		let consistent = true;
+		for (let offset = 0; offset < group.payload.length; offset++) {
+			const source = fileLines[group.startLine - 1 + offset] ?? "";
+			const payload = group.payload[offset];
+			if (source.trim().length === 0 || source.trimStart() !== payload.trimStart()) continue;
+			const sourceIndent = leadingIndent(source);
+			const payloadIndent = leadingIndent(payload);
+			if (!sourceIndent.endsWith(payloadIndent)) {
+				consistent = false;
+				break;
+			}
+			const candidate = sourceIndent.slice(0, sourceIndent.length - payloadIndent.length);
+			if (shift === undefined) shift = candidate;
+			else if (shift !== candidate) {
+				consistent = false;
+				break;
+			}
+			matches++;
+		}
+		if (!consistent || !shift || matches < 2 || matches * 2 <= group.payload.length) continue;
+		for (const index of group.insertIndices) {
+			const edit = edits[index];
+			if (edit.kind !== "insert" || edit.text.trim().length === 0) continue;
+			edits[index] = { ...edit, text: `${shift}${edit.text}` };
+		}
+		repaired = true;
+	}
+	return repaired ? [REPLACEMENT_INDENT_AUTO_SHIFT_WARNING] : [];
 }
 
 /**
@@ -927,6 +988,15 @@ function repairReplacementBoundaries(
 		after: new Map(),
 	};
 	for (const edit of projected) {
+		if (edit.kind === "insert" && edit.cursor.kind === "bof") {
+			const inserted = insertedByLine.get(1);
+			if (inserted) inserted.push(edit.text);
+			else insertedByLine.set(1, [edit.text]);
+			const before = insertedLineMaps.before.get(1);
+			if (before) before.push(edit.text);
+			else insertedLineMaps.before.set(1, [edit.text]);
+			continue;
+		}
 		if (edit.kind !== "insert") continue;
 		for (const anchor of getCursorAnchors(edit.cursor)) {
 			const lines = insertedByLine.get(anchor.line);
@@ -1272,9 +1342,10 @@ export function applyEdits(text: string, edits: readonly Edit[], options: ApplyE
 		fileLines,
 	);
 	validateLineBounds(targetEdits, fileLines);
+	const indentationWarnings = repairReplacementIndentation(targetEdits, fileLines);
 	const { edits: repaired, warnings: boundaryWarnings } = repairReplacementBoundaries(targetEdits, fileLines);
 	const { edits: landed, warnings: landingWarnings } = repairAfterInsertLandings(repaired, fileLines);
-	const warnings = [...boundaryWarnings, ...landingWarnings];
+	const warnings = [...indentationWarnings, ...boundaryWarnings, ...landingWarnings];
 
 	// Partition edits into bof, eof, and anchor-targeted buckets.
 	const bofLines: string[] = [];

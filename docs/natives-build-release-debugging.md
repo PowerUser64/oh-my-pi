@@ -37,16 +37,16 @@ Package side (unchanged runtime/packaging):
 
 Root `BUILD.bazel` instantiates one `native_addon` per shipped `(platform, arch, ISA-variant)`:
 
-| Target                            | Platform                                | Canonical output                     |
-| --------------------------------- | --------------------------------------- | ------------------------------------ |
-| `//:natives-linux-x64-baseline`   | `//bazel/platforms:linux-x64-baseline`  | `pi_natives.linux-x64-baseline.node` |
-| `//:natives-linux-x64-modern`     | `//bazel/platforms:linux-x64-modern`    | `pi_natives.linux-x64-modern.node`   |
-| `//:natives-linux-arm64`          | `//bazel/platforms:linux-arm64`         | `pi_natives.linux-arm64.node`        |
-| `//:natives-linux-musl-x64-baseline` | `//bazel/platforms:linux-musl-x64-baseline` | `pi_natives.linux-x64-baseline.node` |
-| `//:natives-linux-musl-arm64`     | `//bazel/platforms:linux-musl-arm64`    | `pi_natives.linux-arm64.node`        |
-| `//:natives-darwin-x64-baseline`  | `//bazel/platforms:darwin-x64-baseline` | `pi_natives.darwin-x64-baseline.node` |
-| `//:natives-darwin-arm64`         | `//bazel/platforms:darwin-arm64`        | `pi_natives.darwin-arm64.node`       |
-| `//:natives-win32-x64-baseline`   | `//bazel/platforms:win32-x64-baseline`  | `pi_natives.win32-x64-baseline.node` |
+| Target                               | Platform                                    | Canonical output                      |
+| ------------------------------------ | ------------------------------------------- | ------------------------------------- |
+| `//:natives-linux-x64-baseline`      | `//bazel/platforms:linux-x64-baseline`      | `pi_natives.linux-x64-baseline.node`  |
+| `//:natives-linux-x64-modern`        | `//bazel/platforms:linux-x64-modern`        | `pi_natives.linux-x64-modern.node`    |
+| `//:natives-linux-arm64`             | `//bazel/platforms:linux-arm64`             | `pi_natives.linux-arm64.node`         |
+| `//:natives-linux-musl-x64-baseline` | `//bazel/platforms:linux-musl-x64-baseline` | `pi_natives.linux-x64-baseline.node`  |
+| `//:natives-linux-musl-arm64`        | `//bazel/platforms:linux-musl-arm64`        | `pi_natives.linux-arm64.node`         |
+| `//:natives-darwin-x64-baseline`     | `//bazel/platforms:darwin-x64-baseline`     | `pi_natives.darwin-x64-baseline.node` |
+| `//:natives-darwin-arm64`            | `//bazel/platforms:darwin-arm64`            | `pi_natives.darwin-arm64.node`        |
+| `//:natives-win32-x64-baseline`      | `//bazel/platforms:win32-x64-baseline`      | `pi_natives.win32-x64-baseline.node`  |
 
 Notes:
 
@@ -68,12 +68,12 @@ Per-target codegen that is not part of the transition lives in `crates/pi-native
 
 ### 3) Platforms and toolchains
 
-| Target family | cc toolchain | Notes |
-| --- | --- | --- |
-| linux gnu (x64/arm64) | `@zig_sdk//libc_aware/toolchain:linux_*_gnu.2.17` (hermetic zig cc) | glibc **2.17** portability floor — same floor the previous cross builds used |
-| linux musl (x64/arm64) | `@zig_sdk//libc_aware/toolchain:linux_*_musl` | dynamic CRT (`-Ctarget-feature=-crt-static` in the crate BUILD) |
-| darwin (x64/arm64) | host Xcode toolchain | Apple frameworks aren't redistributable; darwin addons build on mac hosts only |
-| win32-x64 msvc | `//bazel/toolchains/msvc` (`@msvc_cc`): clang-cl + lld-link + xwin CRT/SDK | hermetic cross-link from linux-x64 CI pods and darwin dev hosts; see `bazel/toolchains/msvc/NOTES.md` |
+| Target family          | cc toolchain                                                               | Notes                                                                                                 |
+| ---------------------- | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| linux gnu (x64/arm64)  | `@zig_sdk//libc_aware/toolchain:linux_*_gnu.2.17` (hermetic zig cc)        | glibc **2.17** portability floor — same floor the previous cross builds used                          |
+| linux musl (x64/arm64) | `@zig_sdk//libc_aware/toolchain:linux_*_musl`                              | dynamic CRT (`-Ctarget-feature=-crt-static` in the crate BUILD)                                       |
+| darwin (x64/arm64)     | host Xcode toolchain                                                       | Apple frameworks aren't redistributable; darwin addons build on mac hosts only                        |
+| win32-x64 msvc         | `//bazel/toolchains/msvc` (`@msvc_cc`): clang-cl + lld-link + xwin CRT/SDK | hermetic cross-link from linux-x64 CI pods and darwin dev hosts; see `bazel/toolchains/msvc/NOTES.md` |
 
 Rust toolchains are nightly (pinned in `MODULE.bazel`), with repo-local musl re-registrations in `//bazel/toolchains` carrying an explicit `@zig_sdk//libc:musl` constraint (rules_rust's generated gnu and musl toolchains otherwise share (os, cpu) constraints).
 
@@ -156,24 +156,24 @@ bazelisk --bazelrc="$rc" build --config=rustfmt //crates/...
 - `--config=clippy` = rules_rust clippy aspect + `-Dwarnings`; `--config=clippy-strict` layers the generated `bazel/clippy.bazelrc` for crates with `[lints] workspace = true`.
 - `--config=rustfmt` = rustfmt aspect against the workspace `rustfmt.toml`.
 
-`native_addons` on main builds `//:natives-linux-all` and uploads every `.node` output as the `native-addons` workflow artifact. Downstream jobs use `.github/actions/native-artifacts` to download that artifact and install the requested target set without invoking Bazel.
+`native_addons` on main builds the six Linux-hosted targets one at a time to avoid concurrent-link OOMs, then builds `//:natives-linux-all` as an aggregate consistency check. It uploads every `.node` output as the `native-addons` workflow artifact. Downstream jobs use `.github/actions/native-artifacts` to download that artifact and install the requested target set without invoking Bazel.
 
 No toolchain setup steps are required for native jobs: bazelisk is on the GitHub images and baked into the kata runner image; Bazel fetches Rust/zig/LLVM/xwin hermetically.
 
 ### Hosted cache warmer
 
-`.github/workflows/bazel-cache-warm.yml` seeds the GitHub-hosted caches that have no other reliable producer: the `release-darwin-*` bazel disk caches (built on the same macOS images as the `release_binary` darwin matrix, so a release's bazel build is the version-bump delta instead of a ~40-min cold graph) and the shared bun store entry PR jobs restore but never save. It triggers only on pushes that can change those archives (crate/bazel/lock inputs, `bun.lock`, `.github/**`).
+`.github/workflows/bazel-cache-warm.yml` seeds the GitHub-hosted caches that have no other reliable producer: the `release-darwin-*` bazel disk caches (built on the same macOS images as the `release_binary_darwin` matrix, so a release's bazel build is the version-bump delta instead of a ~40-min cold graph) and the shared bun store entry PR jobs restore but never save. It triggers only on pushes that can change those archives (crate/bazel/lock inputs, `bun.lock`, `.github/**`).
 
 ### `bazel-cache` action (`.github/actions/bazel-cache`)
 
 Single source of truth for cache wiring, emitted as a bazelrc fragment (its `rc` output) that consumers pass via `bazelisk --bazelrc=...` or `OMP_BAZEL_RC`. Two modes are selected via `BAZEL_REMOTE_USER`/`BAZEL_REMOTE_PASSWORD`:
 
-| Runner | Fragment contents |
-| --- | --- |
-| omp-kata pod | `--config=ci --config=cache-rw --remote_cache=grpcs://bazel-remote.bazel-cache.svc.cluster.local:9092 --tls_certificate=infra/bazel-remote/ca.crt --remote_header='authorization=Basic <b64 ci creds>'` |
-| GitHub-hosted | `--config=ci --disk_cache=~/.cache/omp-bazel-disk --repository_cache=~/.cache/omp-bazel-repo` |
+| Runner        | Fragment contents                                                                                                                                                                                            |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| omp-kata pod  | A temporary output root, `--config=ci`, the PVC-backed repository/xwin caches, `--config=cache-rw`, the in-cluster TLS remote-cache endpoint and masked Basic-auth header, plus `--remote_download_toplevel` |
+| GitHub-hosted | `--config=ci`, `--disk_cache=$HOME/.cache/omp-bazel-disk`, and `--repository_cache=$HOME/.cache/omp-bazel-repo`                                                                                              |
 
-Hosted disk caches use `bazel-disk-v3-<scope>-<os>-<arch>-<config-hash>-<source-hash>`. The config hash covers Cargo/Bazel/toolchain settings; the source hash covers `crates/**` and root `BUILD.bazel`. Restores fall back from the exact key to the config-scoped prefix, then to a bare `<scope>-<os>-<arch>` prefix — the bare fallback is what keeps release version bumps (which rewrite `Cargo.toml`/`Cargo.lock` and thus the config hash) from rebuilding cold; bazel's content-addressed action keys make a stale archive a partial hit, never a wrong output. An inexact restore permits one refreshed exact-key save, and restored entries untouched for 14 days are pruned so archives don't grow without bound. The remote endpoint resolves only inside the cluster.
+Hosted disk caches use `bazel-disk-v3-<scope>-<os>-<arch>-<config-hash>-<source-hash>`. The config hash covers Cargo/Bazel/toolchain settings; the source hash covers `crates/**` and root `BUILD.bazel`. Restores fall back from the exact key to the config-scoped prefix, then to a bare `<scope>-<os>-<arch>` prefix — the bare fallback is what keeps release version bumps (which rewrite `Cargo.toml`/`Cargo.lock` and thus the config hash) from rebuilding cold; bazel's content-addressed action keys make a stale archive a partial hit, never a wrong output. An inexact restore permits one refreshed exact-key save. Before a hosted build, disk-cache files untouched for 14 days are pruned; repository-cache contents are deliberately not age-pruned because extracted files retain upstream mtimes. The remote endpoint resolves only inside the cluster.
 
 ### Native artifact actions
 
@@ -209,18 +209,18 @@ bazelisk build --nobuild //:natives-win32-x64-baseline
 
 ### Common failure classes (seen during bring-up — fixes already in tree, cite when they resurface)
 
-| Symptom | Cause | Fix (in tree) |
-| --- | --- | --- |
-| musl build "succeeds" but emits no `.node` | musl defaults to `+crt-static`; rustc silently emits no cdylib | `-Ctarget-feature=-crt-static` select in `crates/pi-natives/BUILD.bazel` |
-| opus/cmake `try_compile` fails linking UBSan runtime | zig cc enables UBSan by default; cmake's test exe links with the raw wrapper (no toolchain features) | `CFLAGS=-fno-sanitize=undefined` in the `audiopus_sys` annotation (`MODULE.bazel`) |
-| `tree-sitter-just` scanner.c `#error` under opt | scanner hard-errors when `NDEBUG` is set (opt-mode cc default) | `CFLAGS=-UNDEBUG` annotation (cc-rs appends env CFLAGS last, so `-U` wins) |
-| rstest macro: "Cargo.toml not found" in a vendored test | rstest verifies `Cargo.toml` exists in the manifest dir | `compile_data = ["Cargo.toml"]` on the `rust_test` (see `crates/vendor/uu-tail/BUILD.bazel`) |
-| vendored tests fail on bare `test_data/...` paths / symlink into srcs | tests assume cargo's cwd, incompatible with runfiles execution | `tags = ["manual"]` (e.g. `//crates/vendor/uu-find:uu-find_test`); run via `cargo nextest` when touching the fork; hermetic sibling test covers the contract |
-| blake3 msvc: `ml64.exe` not found | cc-rs resolves MASM from build-script PATH on non-windows hosts | `bin/ml64.exe → llvm-ml -m64` shim in `@msvc_cc`, prepended via the `blake3` annotation PATH |
-| audiopus_sys msvc: cmake demands VS generator / rc+mt tools; `try_compile` wants `msvcrtd.lib` | cross cmake on linux/mac hosts; Debug config → `/MDd` which the lean xwin splat lacks | `CMAKE_GENERATOR_x86_64_pc_windows_msvc=Ninja` + `@msvc_cc`'s `toolchain.cmake` (`CMAKE_TOOLCHAIN_FILE_x86_64_pc_windows_msvc`) pinning wrappers + Release try-compile + `/MD` |
-| win32 link oddities generally | — | read `bazel/toolchains/msvc/NOTES.md` first: wrapper self-location, `lld-link` flavor/driver-link behavior, `LIB`, `/MD` CRT choice, xwin splat caveats |
-| `rust_test(crate = ...)` "can't find crate" at macro expansion | rmeta-only pipelined deps break macro_rules re-export harness compiles | rust pipelined_compilation stays OFF (`.bazelrc` note) |
-| build script can't find cmake/ninja | `--incompatible_strict_action_env` — no host env leaks | explicit `PATH` in the crate annotation (`MODULE.bazel`), not host env |
+| Symptom                                                                                        | Cause                                                                                                | Fix (in tree)                                                                                                                                                                  |
+| ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| musl build "succeeds" but emits no `.node`                                                     | musl defaults to `+crt-static`; rustc silently emits no cdylib                                       | `-Ctarget-feature=-crt-static` select in `crates/pi-natives/BUILD.bazel`                                                                                                       |
+| opus/cmake `try_compile` fails linking UBSan runtime                                           | zig cc enables UBSan by default; cmake's test exe links with the raw wrapper (no toolchain features) | `CFLAGS=-fno-sanitize=undefined` in the `audiopus_sys` annotation (`MODULE.bazel`)                                                                                             |
+| `tree-sitter-just` scanner.c `#error` under opt                                                | scanner hard-errors when `NDEBUG` is set (opt-mode cc default)                                       | `CFLAGS=-UNDEBUG` annotation (cc-rs appends env CFLAGS last, so `-U` wins)                                                                                                     |
+| rstest macro: "Cargo.toml not found" in a vendored test                                        | rstest verifies `Cargo.toml` exists in the manifest dir                                              | `compile_data = ["Cargo.toml"]` on the `rust_test` (see `crates/vendor/uu-tail/BUILD.bazel`)                                                                                   |
+| vendored tests fail on bare `test_data/...` paths / symlink into srcs                          | tests assume cargo's cwd, incompatible with runfiles execution                                       | `tags = ["manual"]` (e.g. `//crates/vendor/uu-find:uu-find_test`); run via `cargo nextest` when touching the fork; hermetic sibling test covers the contract                   |
+| blake3 msvc: `ml64.exe` not found                                                              | cc-rs resolves MASM from build-script PATH on non-windows hosts                                      | `bin/ml64.exe → llvm-ml -m64` shim in `@msvc_cc`, prepended via the `blake3` annotation PATH                                                                                   |
+| audiopus_sys msvc: cmake demands VS generator / rc+mt tools; `try_compile` wants `msvcrtd.lib` | cross cmake on linux/mac hosts; Debug config → `/MDd` which the lean xwin splat lacks                | `CMAKE_GENERATOR_x86_64_pc_windows_msvc=Ninja` + `@msvc_cc`'s `toolchain.cmake` (`CMAKE_TOOLCHAIN_FILE_x86_64_pc_windows_msvc`) pinning wrappers + Release try-compile + `/MD` |
+| win32 link oddities generally                                                                  | —                                                                                                    | read `bazel/toolchains/msvc/NOTES.md` first: wrapper self-location, `lld-link` flavor/driver-link behavior, `LIB`, `/MD` CRT choice, xwin splat caveats                        |
+| `rust_test(crate = ...)` "can't find crate" at macro expansion                                 | rmeta-only pipelined deps break macro_rules re-export harness compiles                               | rust pipelined_compilation stays OFF (`.bazelrc` note)                                                                                                                         |
+| build script can't find cmake/ninja                                                            | `--incompatible_strict_action_env` — no host env leaks                                               | explicit `PATH` in the crate annotation (`MODULE.bazel`), not host env                                                                                                         |
 
 ### Cache behavior
 
@@ -244,7 +244,7 @@ x64 supports CPU variants, encoded as `//bazel/variants` constraint values on th
 - `modern` (AVX2-capable path)
 - `baseline` (fallback)
 
-Non-x64 uses a single default artifact with no variant suffix. There is no build-time variant *switch*: each variant is its own `//:natives-*` target, and the `host` pseudo-target picks modern vs baseline via AVX2 detection.
+Non-x64 uses a single default artifact with no variant suffix. There is no build-time variant _switch_: each variant is its own `//:natives-*` target, and the `host` pseudo-target picks modern vs baseline via AVX2 detection.
 
 ### Output filenames
 
@@ -255,8 +255,9 @@ Runtime x64 candidate order also includes the unsuffixed default filename after 
 
 ## Runtime flags
 
-- `PI_NATIVE_VARIANT`: x64 runtime override; valid values are `modern` and `baseline`.
-- `PI_COMPILED`: legacy compiled-mode signal. A populated embedded-addon manifest is also a compiled-mode signal; compiled release builds additionally define `process.env.PI_COMPILED="true"` during `bun build --compile`.
+- `PI_NATIVE_VARIANT`: x64 runtime override; valid values are `modern` and `baseline`. Invalid values are ignored and normal detection runs.
+- `PI_DEBUG_STARTUP`: writes synchronous `[startup] native:…` markers to stderr around loader entry, embedded extraction, candidate loads, and native Tokio runtime installation; use it to localize startup hangs.
+- `PI_COMPILED`: compiled-mode signal. Release compilation constant-folds `process.env.PI_COMPILED` to `"true"`; a populated embedded-addon manifest and Bun embedded URL markers also signal compiled mode.
 
 ## Embed lifecycle (`embed-native.ts`)
 
@@ -279,6 +280,8 @@ Typical local loop:
 1. Build addon: `bun --cwd=packages/natives run build`.
 2. Loader resolves platform npm leaf-package candidates (`@oh-my-pi/pi-natives-<platform>-<arch>`, when resolvable), then package-local `native/` and executable-dir fallback candidates.
 3. Generated declarations in `native/index.d.ts` describe the public TS API (regenerate with `build:bindings` only when the Rust API surface changes).
+4. On Windows package installs, the loader first copies a `node_modules` addon into the versioned cache so a running process does not lock the file Bun must replace during a later global update.
+5. After a successful load, older semver-shaped version cache directories are removed best-effort; cleanup failures never abort startup.
 
 ## Shipped/compiled binary workflow
 
@@ -299,13 +302,13 @@ This is why packaging + runtime loader expectations must align: filenames, platf
 
 Generated declarations currently include exports from these Rust modules:
 
-| Area                   | Representative JS exports                                                                               | Rust source                                                                  |
-| ---------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Search/workspace       | `grep`, `search`, `hasMatch`, `fuzzyFind`, `glob`, `listWorkspace`, `invalidateFsScanCache`             | `grep.rs`, `fd.rs`, `glob.rs`, `workspace.rs`, `fs_cache.rs`                 |
-| AST/block/summary      | `astGrep`, `astEdit`, `blockRangeAt`, `summarizeCode`                                                   | `ast.rs`, `block.rs`, `summary.rs`                                           |
-| Text/highlight/tokens  | `visibleWidth`, `truncateToWidth`, `highlightCode`, `countTokens`                                       | `text.rs`, `highlight.rs`, `tokens.rs`                                       |
-| Shell/PTY/process/keys | `executeShell`, `Shell`, `PtySession`, `Process`, `parseKey`, `applyBashFixups`                         | `shell.rs`, `pty.rs`, `ps.rs`, `keys.rs`                                     |
-| Media/system/iso       | `encodeSixel`, clipboard, macOS appearance/power, `getWorkProfile`, `isoBackend`, `isoStart`, `isoDiff` | `sixel.rs`, `clipboard.rs`, `appearance.rs`, `power.rs`, `prof.rs`, `iso.rs` |
+| Area                   | Representative JS exports                                                                                                               | Rust source                                                                  |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Search/workspace       | `grep`, `search`, `hasMatch`, `fuzzyFind`, `glob`, `listWorkspace`, `invalidateFsScanCache`                                             | `grep.rs`, `fd.rs`, `glob.rs`, `workspace.rs`, `iofs.rs`                     |
+| AST/block/summary      | `astGrep`, `astEdit`, `blockRangeAt`, `summarizeCode`                                                                                   | `ast.rs`, `block.rs`, `summary.rs`                                           |
+| Text/highlight/tokens  | `visibleWidth`, `truncateToWidth`, `highlightCode`, `countTokens`                                                                       | `text.rs`, `highlight.rs`, `tokens.rs`                                       |
+| Shell/PTY/process/keys | `executeShell`, `Shell`, `PtySession`, `Process`, `parseKey`                                                                            | `shell.rs`, `pty.rs`, `ps.rs`, `keys.rs`                                     |
+| Media/system/iso       | `encodeSixel`, `copyToClipboard`, `detectMacOSAppearance`, `MacOSPowerAssertion`, `getWorkProfile`, `isoBackend`, `isoStart`, `isoDiff` | `sixel.rs`, `clipboard.rs`, `appearance.rs`, `power.rs`, `prof.rs`, `iso.rs` |
 
 ## Failure behavior and diagnostics
 
@@ -326,14 +329,14 @@ Generated declarations currently include exports from these Rust modules:
 
 ## Troubleshooting matrix
 
-| Symptom                                                                | Likely cause                                                                                | Verify                                                            | Fix                                                                                                   |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Symptom                                                                | Likely cause                                                                                | Verify                                                            | Fix                                                                                                                                  |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `Cannot find module` or dynamic library load error for every candidate | Missing release artifact, wrong platform tag, or stale compiled cache                       | Inspect loader error list and `packages/natives/native` filenames | Build correct target (`bun scripts/bazel-natives.ts <t> --dest packages/natives/native`); delete stale cache for the package version |
-| Export is missing at runtime but present in TypeScript                 | Stale `.node` loaded, generated declarations newer than binary, or Rust export not compiled | Require the actual candidate and inspect `Object.keys(mod)`       | Rebuild native package and remove stale candidate/cache paths                                         |
-| x64 machine loads baseline when modern expected                        | `PI_NATIVE_VARIANT=baseline`, no AVX2 detected, or modern file unavailable                  | Check env and filenames in `native/`                              | Build and ship the modern target (`bun scripts/bazel-natives.ts linux-x64-modern --dest packages/natives/native`) |
-| gnu addon overwritten by musl (or vice versa)                          | Both built into one dest — they share canonical basenames by design                         | Compare `bazel-bin/natives-<t>/` sources vs installed file        | Separate invocations with separate `--dest` dirs (release matrix already does this)                   |
-| Compiled binary fails after upgrade                                    | Stale extracted cache, embedded archive mismatch, or embedded manifest version mismatch     | Inspect `<getNativesDir()>/<version>` and loader error list       | Delete versioned cache for the package version; regenerate embedded archive/manifest during packaging |
-| `gen:native` fails with `No native addons found`                       | Required platform artifact was not built before embedding                                   | Check expected list in error text                                 | Build at least one expected artifact for the target, then rerun `gen:native`                          |
+| Export is missing at runtime but present in TypeScript                 | Stale `.node` loaded, generated declarations newer than binary, or Rust export not compiled | Require the actual candidate and inspect `Object.keys(mod)`       | Rebuild native package and remove stale candidate/cache paths                                                                        |
+| x64 machine loads baseline when modern expected                        | `PI_NATIVE_VARIANT=baseline`, no AVX2 detected, or modern file unavailable                  | Check env and filenames in `native/`                              | Build and ship the modern target (`bun scripts/bazel-natives.ts linux-x64-modern --dest packages/natives/native`)                    |
+| gnu addon overwritten by musl (or vice versa)                          | Both built into one dest — they share canonical basenames by design                         | Compare `bazel-bin/natives-<t>/` sources vs installed file        | Separate invocations with separate `--dest` dirs (release matrix already does this)                                                  |
+| Compiled binary fails after upgrade                                    | Stale extracted cache, embedded archive mismatch, or embedded manifest version mismatch     | Inspect `<getNativesDir()>/<version>` and loader error list       | Delete versioned cache for the package version; regenerate embedded archive/manifest during packaging                                |
+| `gen:native` fails with `No native addons found`                       | Required platform artifact was not built before embedding                                   | Check expected list in error text                                 | Build at least one expected artifact for the target, then rerun `gen:native`                                                         |
 
 ## Operational commands
 
@@ -364,7 +367,7 @@ When `pi-natives` is built inside the robomp orchestrator (`python/robomp/`), wo
 
 ### What is cached
 
-The complete set of files in `packages/natives/native/` that are pure functions of the cache-key inputs:
+The cache captures the following files from `packages/natives/native/` under the computed key. Correct reuse assumes the worktree contents of keyed paths match committed `HEAD`; because the key ignores uncommitted changes, a build from a dirty keyed path can otherwise be captured under and later reused from the unchanged key:
 
 - `pi_natives.<platform>-<arch>[-variant].node` (glob `pi_natives.*.node`)
 - `index.d.ts`
@@ -384,9 +387,9 @@ The key is `sha256` over `(path \t git-tree-hash \n)` pairs for the following in
 4. `rust-toolchain.toml`
 5. `packages/natives` (whole subtree — build script, `scripts/*`, package.json)
 
-Tree hashes come from one `git cat-file --batch-check` invocation against `HEAD`; paths missing from `HEAD` fold in as a fixed null hash so the key stays deterministic across repos that don't ship every input. The target-triple suffix matches the addon basename convention (`<platform>-<arch>` for non-x64, `<platform>-<arch>-<variant>` for x64).
+Tree hashes come from one `git cat-file --batch-check` invocation against `HEAD`; paths missing from `HEAD` fold in as a fixed null hash so the key stays deterministic across repos that don't ship every input. The target suffix is `<platform>-<arch>` on non-x64. On x64 it is `<platform>-<arch>-<TARGET_VARIANT>`, or `<platform>-<arch>-host` when `TARGET_VARIANT` is unset; the Python cache does not perform AVX2 detection.
 
-Anything outside this input set (Bazel definition files such as `MODULE.bazel`/`BUILD.bazel`, host glibc, env vars) is **not** in the key. If you need to invalidate after such a change, delete the cache directory by hand or bump one of the input files.
+Anything outside this input set (Bazel definition files such as `MODULE.bazel`/`BUILD.bazel`, host glibc, env vars other than the target suffix) is **not** in the key. The content hashes also describe committed `HEAD`, not uncommitted worktree changes. Delete the relevant cache entry after an out-of-key or uncommitted build-input change; committing a change under one of the five keyed paths produces a new key automatically.
 
 ### Layout and ownership
 
@@ -427,4 +430,4 @@ Workspaces that hardlinked a `.node` before GC retain access via the kernel inod
 - Everything: `rm -rf /data/cache/pi-natives/*` (preserve the root so its setgid mode survives).
 - Stuck lock: `rm /data/cache/pi-natives/<repo-slug>/.lock` (only when no orchestrator process is touching the repo).
 
-Trigger an automatic miss by editing any path in the key set: a single touched byte under `crates/`, `Cargo.lock`, `Cargo.toml`, `rust-toolchain.toml`, or `packages/natives/` shifts the tree hash and forces a fresh build at the next populate.
+For a fixed target suffix, a committed `HEAD` change under `crates/`, `Cargo.lock`, `Cargo.toml`, `rust-toolchain.toml`, or `packages/natives/` produces an automatic miss. Changing platform/architecture, or `TARGET_VARIANT` on x64, also selects a different key. Merely editing an uncommitted worktree changes neither the `HEAD` hashes nor the key.

@@ -2067,11 +2067,20 @@ describe("vibe session registry", () => {
 	});
 
 	it("persists a kill issued before child initialization and terminalizes the worker if it registers late", async () => {
+		// Handshake so kill() lands while the worker is mid-init, not before its
+		// job body has started executing: on a loaded runner the job may not have
+		// dispatched yet when spawn() returns, and kill would then observe no
+		// registration at all (the mock registers only after the abort lands),
+		// failing the registry assertion below. Resolving once the body is inside
+		// the abort-wait keeps the test exercising exactly the late-registration
+		// path it names.
+		const workerStarted = deferred();
 		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
 			const artifactsDir = options.artifactsDir;
 			if (!artifactsDir) throw new Error("Persisted vibe test requires an artifacts directory");
 			const signal = options.signal;
 			if (!signal) throw new Error("Pre-initialization worker requires a cancellation signal");
+			workerStarted.resolve();
 			await new Promise<void>(resolve => {
 				if (signal.aborted) resolve();
 				else signal.addEventListener("abort", () => resolve(), { once: true });
@@ -2101,6 +2110,9 @@ describe("vibe session registry", () => {
 		const session = createSession({ manager: jobs, sessionManager: parentManager });
 		const registry = VibeSessionRegistry.global();
 		await registry.spawn(session, { cli: "fast", name: "pre-init-kill", prompt: "Start later." });
+		// Wait for the worker to be mid-init (inside the abort-wait) before
+		// issuing the kill — see the handshake comment at the top of the test.
+		await workerStarted.promise;
 
 		expect((await registry.kill(session, "pre-init-kill")).cancelledTurn).toBe(true);
 		expect(AgentRegistry.global().get("pre-init-kill")).toMatchObject({ status: "aborted", session: null });

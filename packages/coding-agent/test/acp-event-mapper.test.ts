@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import path from "node:path";
 import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk";
-import { type } from "arktype";
+import { type } from "@oh-my-pi/omptype";
 
 const arkSessionNotification = type({
 	sessionId: "string",

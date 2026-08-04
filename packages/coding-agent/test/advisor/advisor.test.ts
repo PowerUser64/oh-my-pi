@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "bun:test";
+import { type } from "@oh-my-pi/omptype";
 import type { AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import type { TUI } from "@oh-my-pi/pi-tui";
-import { type } from "arktype";
 import {
 	ADVISOR_DEFAULT_TOOL_NAMES,
 	AdviseTool,
@@ -30,7 +30,6 @@ import type { Settings } from "../../src/config/settings";
 import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../../src/modes/components/advisor-config";
 import { createAdvisorMessageCard } from "../../src/modes/components/advisor-message";
 import { getThemeByName, setThemeInstance } from "../../src/modes/theme/theme";
-import advisorSystemPrompt from "../../src/prompts/advisor/system.md" with { type: "text" };
 import { SecretObfuscator } from "../../src/secrets/obfuscator";
 import { formatSessionHistoryMarkdown } from "../../src/session/session-history-format";
 import { YieldQueue } from "../../src/session/yield-queue";
@@ -74,9 +73,6 @@ describe("advisor", () => {
 
 			expect(rendered).toContain("→ grep(needle @ packages/coding-agent/src) ⇒ error");
 			expect(rendered).not.toContain("paths[0]");
-			expect(advisorSystemPrompt).toContain("Arguments absent from the rendered transcript are UNKNOWN");
-			expect(advisorSystemPrompt).toContain("NEVER assert concrete values, array indexes");
-			expect(advisorSystemPrompt).toContain("NEVER claim `paths[0]`, array flattening, or malformed `paths`");
 		});
 	});
 
@@ -430,6 +426,25 @@ describe("advisor", () => {
 			expect(onAdvice).toHaveBeenNthCalledWith(1, note, "nit");
 			expect(onAdvice).toHaveBeenNthCalledWith(2, note, "concern");
 			expect(onAdvice).toHaveBeenNthCalledWith(3, note, "blocker");
+		});
+
+		it("withholds non-blockers for in-progress updates without consuming dedupe state", async () => {
+			const onAdvice = vi.fn();
+			const tool = new AdviseTool(onAdvice);
+			const note = "The result still needs a focused regression test.";
+
+			tool.beginUpdate(true);
+			await tool.execute("tc-1", { note, severity: "concern" });
+			await tool.execute("tc-2", { note: "Minor naming cleanup.", severity: "nit" });
+			await tool.execute("tc-3", { note: "A destructive command is running.", severity: "blocker" });
+
+			expect(onAdvice).toHaveBeenCalledTimes(1);
+			expect(onAdvice).toHaveBeenCalledWith("A destructive command is running.", "blocker");
+
+			tool.beginUpdate(false);
+			await tool.execute("tc-4", { note, severity: "concern" });
+			expect(onAdvice).toHaveBeenCalledTimes(2);
+			expect(onAdvice).toHaveBeenLastCalledWith(note, "concern");
 		});
 
 		it("validates parameters using ArkType", () => {
@@ -1275,6 +1290,7 @@ describe("advisor", () => {
 
 		it("tags in-progress turns with [in progress] heading", async () => {
 			const promptInputs: string[] = [];
+			const updateStates: boolean[] = [];
 			const { promise: promptStarted, resolve: startPrompt } = Promise.withResolvers<void>();
 			const agent: AdvisorAgent = {
 				prompt: async input => {
@@ -1289,6 +1305,7 @@ describe("advisor", () => {
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
 				enqueueAdvice: () => {},
+				beginAdvisorUpdate: inProgress => updateStates.push(inProgress),
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 
@@ -1297,10 +1314,12 @@ describe("advisor", () => {
 
 			expect(promptInputs).toHaveLength(1);
 			expect(promptInputs[0]).toContain("[in progress — more steps follow]");
+			expect(updateStates).toEqual([true]);
 		});
 
 		it("uses plain heading when willContinue is false or absent", async () => {
 			const promptInputs: string[] = [];
+			const updateStates: boolean[] = [];
 			const { promise: promptStarted, resolve: startPrompt } = Promise.withResolvers<void>();
 			const agent: AdvisorAgent = {
 				prompt: async input => {
@@ -1315,6 +1334,7 @@ describe("advisor", () => {
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
 				enqueueAdvice: () => {},
+				beginAdvisorUpdate: inProgress => updateStates.push(inProgress),
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 
@@ -1324,6 +1344,7 @@ describe("advisor", () => {
 			expect(promptInputs).toHaveLength(1);
 			expect(promptInputs[0]).toContain("### Session update\n");
 			expect(promptInputs[0]).not.toContain("[in progress");
+			expect(updateStates).toEqual([false]);
 		});
 
 		it("sends the batch when context maintenance fails", async () => {

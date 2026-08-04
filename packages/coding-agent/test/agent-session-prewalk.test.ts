@@ -400,6 +400,135 @@ describe("AgentSession prewalk", () => {
 		expect(session.model?.id).toBe(primary.id);
 	});
 
+	it("does not switch on a read-only xd:// device dispatched through write (issue #7312)", async () => {
+		const primary = modelOrThrow("claude-sonnet-4-5");
+		const target = modelOrThrow("claude-sonnet-4-6");
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
+
+		// A read-only lsp navigation is dispatched as `write xd://lsp`; the write
+		// result carries the wrapped tool's read tier. Like a bash step, it must
+		// not arm the hand-off — the model keeps reasoning about code shape on the
+		// strong model. Mirrors the bounded-continuation flow: one continuation,
+		// four turns, all primary, then a clean stop.
+		const readDeviceWrite: AgentTool<typeof writeToolSchema, { xdev: { tool: string; mode: string; tier: string } }> =
+			{
+				name: "write",
+				label: "Write",
+				description: "Dispatch a read-only device",
+				parameters: writeToolSchema,
+				async execute() {
+					return {
+						content: [{ type: "text", text: "references" }],
+						details: { xdev: { tool: "lsp", mode: "execute", tier: "read" } },
+					};
+				},
+			};
+		const mock = createMockModel({
+			responses: [
+				toolCall("t1", "record"),
+				toolCall("t2", "write"),
+				{ content: [{ type: "text", text: "Still planning." }], stopReason: "stop" },
+				{ content: [{ type: "text", text: "Done planning." }], stopReason: "stop" },
+			],
+		});
+		const requested: string[] = [];
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: {
+				model: primary,
+				systemPrompt: ["Test"],
+				tools: [recordTool as AgentTool, readDeviceWrite as AgentTool],
+				messages: [],
+				thinkingLevel: Effort.Medium,
+			},
+			convertToLlm,
+			streamFn: (model, context, options) => {
+				requested.push(`${model.provider}/${model.id}`);
+				return mock.stream(model, context, options);
+			},
+		});
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry,
+			toolRegistry: new Map([
+				[recordTool.name, recordTool as AgentTool],
+				[readDeviceWrite.name, readDeviceWrite as AgentTool],
+			]),
+			prewalk: { target },
+		});
+
+		await session.prompt("investigate the code shape");
+
+		expect(requested).toEqual(Array(4).fill(`${primary.provider}/${primary.id}`));
+		expect(session.model?.id).toBe(primary.id);
+	});
+
+	it("switches on a write-tier xd:// device dispatched through write (issue #7312)", async () => {
+		const primary = modelOrThrow("claude-sonnet-4-5");
+		const target = modelOrThrow("claude-sonnet-4-6");
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
+
+		// An lsp rename is a write-tier device call — it must arm the hand-off
+		// just like a direct edit/write: the write turn stays on the strong model,
+		// the next turn runs on the target.
+		const writeDeviceWrite: AgentTool<
+			typeof writeToolSchema,
+			{ xdev: { tool: string; mode: string; tier: string } }
+		> = {
+			name: "write",
+			label: "Write",
+			description: "Dispatch a write-tier device",
+			parameters: writeToolSchema,
+			async execute() {
+				return {
+					content: [{ type: "text", text: "renamed" }],
+					details: { xdev: { tool: "lsp", mode: "execute", tier: "write" } },
+				};
+			},
+		};
+		const mock = createMockModel({
+			responses: [toolCall("t1", "record"), toolCall("t2", "write"), { content: ["done"] }],
+		});
+		const requested: string[] = [];
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: {
+				model: primary,
+				systemPrompt: ["Test"],
+				tools: [recordTool as AgentTool, writeDeviceWrite as AgentTool],
+				messages: [],
+				thinkingLevel: Effort.Medium,
+			},
+			convertToLlm,
+			streamFn: (model, context, options) => {
+				requested.push(`${model.provider}/${model.id}`);
+				return mock.stream(model, context, options);
+			},
+		});
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry,
+			toolRegistry: new Map([
+				[recordTool.name, recordTool as AgentTool],
+				[writeDeviceWrite.name, writeDeviceWrite as AgentTool],
+			]),
+			prewalk: { target },
+		});
+
+		await session.prompt("rename the symbol");
+
+		expect(requested).toEqual([
+			`${primary.provider}/${primary.id}`,
+			`${primary.provider}/${primary.id}`,
+			`${target.provider}/${target.id}`,
+		]);
+		expect(session.model?.id).toBe(target.id);
+	});
+
 	it("re-arms continuation after tool progress between prose turns", async () => {
 		// Regression: a normal prewalk can split planning across several turns:
 		// prose plan, todo init, then prose before implementation. Each tool

@@ -7,6 +7,10 @@
  * - Register commands, keyboard shortcuts, and CLI flags
  * - Interact with the user via UI primitives
  */
+
+import type { Type as arktype } from "@oh-my-pi/omptype";
+import type * as TypeBox from "@oh-my-pi/omptype/typebox";
+import type * as zod from "@oh-my-pi/omptype/zod";
 import type {
 	AgentMessage,
 	AgentToolResult,
@@ -36,8 +40,6 @@ import type {
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
 import type { AutocompleteItem, AutocompleteProvider, Component, EditorTheme, KeyId, TUI } from "@oh-my-pi/pi-tui";
 import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
-import type { Type as arktype } from "arktype";
-import type * as zod from "zod/v4";
 import type { KeybindingsManager } from "../../config/keybindings";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { EditToolDetails } from "../../edit";
@@ -102,7 +104,6 @@ import type {
 	TurnStartEvent,
 } from "../shared-events";
 import type { SlashCommandInfo } from "../slash-commands";
-import type * as TypeBox from "../typebox";
 
 export type { AppKeybinding, KeybindingsManager } from "../../config/keybindings";
 export type { ExecOptions, ExecResult } from "../../exec/exec";
@@ -464,6 +465,21 @@ export interface ExtensionContext {
 	setTimeout(callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]): Timer;
 	/** Clear a timer scheduled via {@link setInterval} or {@link setTimeout}. */
 	clearTimer(timer: Timer): void;
+	/**
+	 * Run the NATIVE built-in implementation of the tool this handler re-registered, with `params`,
+	 * and return its result. Lets a tool that re-registers a built-in (e.g. wrapping `write` to add
+	 * logging or a policy check) delegate to the original instead of reimplementing it — the native
+	 * tool performs its own side effects and internal bookkeeping.
+	 *
+	 * Delegation is same-tool only: it invokes the built-in of the SAME name as the registering tool,
+	 * never an arbitrary target, so it cannot escalate past the approval already granted for this
+	 * call. Present only when a native built-in of that name exists (undefined otherwise, e.g. for a
+	 * net-new tool that shadows no built-in). Recursion is depth-guarded per call chain.
+	 */
+	invokeTool?<TDetails = unknown>(
+		params: Record<string, unknown>,
+		options?: { signal?: AbortSignal; onUpdate?: AgentToolUpdateCallback<TDetails> },
+	): Promise<AgentToolResult<TDetails>>;
 }
 
 /**
@@ -1098,7 +1114,7 @@ export interface ExtensionAPI {
 
 	/** Injected arktype module for arktype-authored extension tools (canonical going forward). */
 	arktype: typeof arktype;
-	/** Injected zod/v4 module for canonical extension tool parameter schemas. */
+	/** Injected omptype-backed zod facade for extension tool parameter schemas. */
 	zod: typeof zod;
 
 	/** Injected pi-coding-agent exports for accessing SDK utilities */

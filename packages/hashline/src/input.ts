@@ -305,11 +305,11 @@ export class PatchSection {
 	 */
 	get hasAnchorScopedEdit(): boolean {
 		return this.edits.some(edit => {
-			if (edit.kind === "delete") return true;
-			// A `replace_block N:` edit is anchored to concrete content on line N.
-			if (edit.kind === "block") return true;
-			// A `CUT` range reads concrete content.
-			if (edit.kind === "cut") return true;
+			if (edit.kind === "delete" || edit.kind === "block" || edit.kind === "cut") return true;
+			if (edit.kind === "paste") {
+				if (edit.at.kind === "span") return true;
+				return edit.at.cursor.kind === "before_anchor" || edit.at.cursor.kind === "after_anchor";
+			}
 			return edit.cursor.kind === "before_anchor" || edit.cursor.kind === "after_anchor";
 		});
 	}
@@ -318,16 +318,20 @@ export class PatchSection {
 	collectAnchorLines(): readonly number[] {
 		const lines = new Set<number>();
 		for (const edit of this.edits) {
-			if (edit.kind === "delete") {
-				lines.add(edit.anchor.line);
-				continue;
-			}
-			if (edit.kind === "block") {
+			if (edit.kind === "delete" || edit.kind === "block") {
 				lines.add(edit.anchor.line);
 				continue;
 			}
 			if (edit.kind === "cut") {
 				for (let line = edit.range.start.line; line <= edit.range.end.line; line++) lines.add(line);
+				continue;
+			}
+			if (edit.kind === "paste") {
+				if (edit.at.kind === "span") {
+					for (let line = edit.at.range.start.line; line <= edit.at.range.end.line; line++) lines.add(line);
+				} else if (edit.at.cursor.kind === "before_anchor" || edit.at.cursor.kind === "after_anchor") {
+					lines.add(edit.at.cursor.anchor.line);
+				}
 				continue;
 			}
 			if (edit.cursor.kind === "before_anchor" || edit.cursor.kind === "after_anchor") {

@@ -5,6 +5,7 @@ export * from "./color";
 export * from "./dirs";
 export * from "./env";
 export * from "./fetch-retry";
+export * from "./file-lock";
 export * from "./format";
 export * from "./frontmatter";
 export * from "./fs-error";

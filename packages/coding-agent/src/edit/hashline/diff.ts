@@ -17,6 +17,7 @@ import {
 	type Cursor,
 	computeFileHash,
 	type Edit,
+	forkClipboard,
 	Patch as HashlinePatch,
 	hasBlockEdit,
 	MismatchError,
@@ -53,10 +54,10 @@ export interface HashlineDiffOptions {
 	skipHashValidation?: boolean;
 	/**
 	 * Clipboard register shared across the sections of one patch preview.
-	 * `CUT` in an earlier section feeds `PASTE` in a later one, so the preview
-	 * matches apply. Multi-section previews MUST thread one register through
-	 * sections in patch order; omitted, each section gets a
-	 * private register (same-file cut/paste still previews correctly).
+	 * `CUT` in an earlier section feeds a register-backed `PUT` in a later one,
+	 * so the preview matches apply. Multi-section previews MUST thread one
+	 * register through sections in patch order; omitted, each section gets a
+	 * private register (same-file cut/put still previews correctly).
 	 */
 	clipboard?: Clipboard;
 }
@@ -153,9 +154,11 @@ async function readSectionForPreview(
 
 function hasAnchorScopedEdit(edits: readonly Edit[]): boolean {
 	return edits.some(edit => {
-		if (edit.kind === "delete") return true;
-		if (edit.kind === "block") return true;
-		if (edit.kind === "cut") return true;
+		if (edit.kind === "delete" || edit.kind === "block" || edit.kind === "cut") return true;
+		if (edit.kind === "paste") {
+			if (edit.at.kind === "span") return true;
+			return edit.at.cursor.kind === "before_anchor" || edit.at.cursor.kind === "after_anchor";
+		}
 		return edit.cursor.kind === "before_anchor" || edit.cursor.kind === "after_anchor";
 	});
 }
@@ -279,19 +282,23 @@ function buildStreamingSectionDiff(
 		onUnresolved: "drop",
 	});
 	const fileLines = normalized.split("\n");
-	// Expand clipboard ops so a `PASTE` previews the moved rows. Resolve into
-	// a scratch register and commit it back only on success: a mid-typed
-	// capture (out-of-range while the range digits are still streaming,
-	// transient sequencing violations) throws AFTER earlier captures may have
-	// landed, and leaking those into the shared register would let a later
-	// section preview a paste that never happened. On failure, fall back to
-	// filtering the clipboard edits out of this section's frame.
-	const scratch: Clipboard = { ...clipboard };
+	// Expand register-backed PUT ops so moved rows appear in the preview.
+	// Resolve into a transactional register and publish it only on success: a
+	// mid-typed capture (out-of-range while the range digits are still
+	// streaming, transient sequencing violations) throws AFTER earlier
+	// captures may have landed, and leaking those into the shared register
+	// would let a later section preview a PUT that never happened. On failure,
+	// filter the clipboard edits out of this section's frame.
+	const scratch = forkClipboard(clipboard);
 	let resolved: readonly Edit[];
 	try {
 		resolved = resolveClipboardEdits(blockResolved, fileLines, scratch, { onEmptyPaste: "drop" });
 		if (scratch.lines === undefined) delete clipboard.lines;
 		else clipboard.lines = scratch.lines;
+		if (scratch.named === undefined) delete clipboard.named;
+		else clipboard.named = scratch.named;
+		if (scratch.pendingAnonCuts === undefined) delete clipboard.pendingAnonCuts;
+		else clipboard.pendingAnonCuts = scratch.pendingAnonCuts;
 	} catch {
 		resolved = blockResolved.filter(edit => edit.kind !== "cut" && edit.kind !== "paste");
 	}

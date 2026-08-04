@@ -87,9 +87,8 @@ process.stdout.write(JSON.stringify([
 	it("actually loads the shim's shared Pi translation through the bundled registry", async () => {
 		// The legacy shim performs the same Pi arg translation as the modern
 		// bridge and imports the shared helpers rather than copying them. Those
-		// live in a single-segment `providers/` module on purpose: `./providers/*`
-		// cannot match a nested `providers/<dir>/<mod>` specifier, which would
-		// fall through to `Bun.resolveSync` and fail under bunfs (issue #3442).
+		// use the explicit single-segment `providers/cursor-pi-args` target; wildcard
+		// exports may also match nested paths, whose registry coverage is tested below.
 		//
 		// Executing the generated registry is the contract — a key present in the
 		// override map still proves nothing if the module cannot be imported.
@@ -221,5 +220,20 @@ process.stdout.write(JSON.stringify([
 		// virtual loader would race the dedicated shim path.
 		const overrides = __buildLegacyPiPackageRootOverrides(true, bundledModuleKeys);
 		expect(overrides).not.toHaveProperty("typebox");
+	});
+
+	it("bundles nested wildcard subpaths so a compiled extension can import them", async () => {
+		// Node matches `*` in an `exports` pattern across `/`, so
+		// `./slash-commands/*` genuinely serves
+		// `slash-commands/helpers/active-oauth-account`. Enumerating only the
+		// top level left every nested key out of the compiled registry, so the
+		// import resolved from source and failed inside a binary — which is how
+		// a real extension (`quota-hud.ts`) broke on this exact specifier.
+		const entries = await collectBundledPiEntries();
+		const keys = new Set(entries.map(entry => entry.key));
+		expect(keys.has("@oh-my-pi/pi-coding-agent/slash-commands/helpers/active-oauth-account")).toBe(true);
+		// Directory index modules stay excluded: `./x/*` must not serve `x/y`
+		// from `y/index.ts`, which Node would not resolve either.
+		expect(keys.has("@oh-my-pi/pi-coding-agent/modes/theme/defaults/index")).toBe(false);
 	});
 });

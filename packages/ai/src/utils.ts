@@ -403,7 +403,7 @@ function sanitizeOpenAIResponsesReasoningItemForReplay(
 function sanitizeOpenAIResponsesImageGenerationCallForReplay(
 	item: Record<string, unknown>,
 ): ResponseInputItem.ImageGenerationCall | undefined {
-	if (typeof item.id !== "string" || item.status !== "completed" || typeof item.result !== "string") {
+	if (typeof item.id !== "string" || typeof item.result !== "string" || item.result.length === 0) {
 		return undefined;
 	}
 	return {

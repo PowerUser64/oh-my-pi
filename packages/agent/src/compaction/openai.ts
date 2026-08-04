@@ -239,6 +239,7 @@ export interface OpenAiRemoteCompactionResponse extends OpenAiRemoteCompactionPr
 export interface RemoteCompactionRequest {
 	systemPrompt: string;
 	prompt: string;
+	maxTokens?: number;
 }
 
 export interface RemoteCompactionResponse {
@@ -928,8 +929,9 @@ export async function requestRemoteCompaction(
 					{ role: "user", content: request.prompt },
 				],
 				stream: false,
+				max_tokens: request.maxTokens,
 			}
-		: { systemPrompt: request.systemPrompt, prompt: request.prompt };
+		: { systemPrompt: request.systemPrompt, prompt: request.prompt, maxTokens: request.maxTokens };
 
 	const response = await (opts?.fetch ?? fetch)(endpoint, {
 		method: "POST",

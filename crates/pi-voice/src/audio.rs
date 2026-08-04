@@ -375,6 +375,16 @@ mod tests {
 	}
 
 	#[test]
+	fn opt_in_default_playback_initializes_and_stops() {
+		if env::var_os("OMP_NATIVE_AUDIO_PLAYBACK_TEST").is_none() {
+			return;
+		}
+
+		let mut stream = PlaybackStream::start(16_000).expect("default playback device starts");
+		stream.stop().expect("default playback device stops");
+	}
+
+	#[test]
 	fn opt_in_default_capture_receives_frames() {
 		if env::var_os("OMP_NATIVE_AUDIO_CAPTURE_TEST").is_none() {
 			return;

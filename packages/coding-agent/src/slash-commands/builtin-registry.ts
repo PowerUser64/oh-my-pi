@@ -32,9 +32,9 @@ import {
 	MarketplaceManager,
 } from "../extensibility/plugins/marketplace";
 import { readMCPConfigFile } from "../mcp/config-writer";
-import { resolveMemoryBackend } from "../memory-backend";
+import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../memory-backend";
 import { runPauseScreen } from "../modes/components/pause-screen";
-import { collectMcpServerNames } from "../modes/controllers/mcp-command-controller";
+import { collectMcpServerNames, MCPCommandController } from "../modes/controllers/mcp-command-controller";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import { theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
@@ -102,39 +102,42 @@ function formatFastModeStatus(session: AgentSession): string {
 }
 
 /** Detailed, session-effective `/computer status` diagnostics. */
-function formatComputerUseStatus(session: AgentSession): string {
+async function formatComputerUseStatus(session: AgentSession): Promise<string> {
 	const enabled = session.settings.get("computer.enabled");
 	const active = session.getEnabledToolNames().includes("computer");
 	const model = session.model;
 	const modelName = model ? formatModelString(model) : "none";
-	const exposure = !enabled || !active ? "not exposed" : computerExposureMode(model);
-	const toolState = active ? "active" : enabled ? "unavailable" : "inactive";
+	const exposure = !enabled
+		? "not exposed (disabled)"
+		: !active
+			? "not exposed (tool inactive)"
+			: computerExposureMode(model);
 	const configured = {
-		backend: session.settings.get("computer.backend"),
 		display: session.settings.get("computer.display"),
 		maxWidth: session.settings.get("computer.maxWidth"),
 		maxHeight: session.settings.get("computer.maxHeight"),
 	};
-	const computerTool = session.getToolByName("computer") as Pick<ComputerTool, "effectiveConfiguration"> | undefined;
-	const effective = computerTool?.effectiveConfiguration ?? configured;
-	const configurationChanged =
-		effective.backend !== configured.backend ||
-		effective.display !== configured.display ||
-		effective.maxWidth !== configured.maxWidth ||
-		effective.maxHeight !== configured.maxHeight;
+	const computerTool = active
+		? (session.getToolByName("computer") as Pick<ComputerTool, "capabilities"> | undefined)
+		: undefined;
+	const capabilities = await computerTool?.capabilities();
+	const capabilityStatus = capabilities
+		? [
+				`backend=${capabilities.backend}${capabilities.displayServer ? `/${capabilities.displayServer}` : ""}`,
+				`capture=${capabilities.capture} (${capabilities.capturePermission})`,
+				`input=${capabilities.input} (${capabilities.inputPermission})`,
+				`ax=${capabilities.ax} (${capabilities.axPermission})`,
+				`backgroundWindowInput=${capabilities.backgroundWindowInput}`,
+				`deliveryModes=${capabilities.deliveryModes.join(",") || "none"}`,
+			].join(", ")
+		: "session not started";
 	return [
 		`Computer use: ${enabled ? "enabled" : "disabled"}`,
-		`tool: ${toolState}`,
-		`backend: ${effective.backend}`,
-		`display: ${effective.display}`,
-		`capture: ${effective.maxWidth}×${effective.maxHeight}`,
-		...(configurationChanged
-			? [
-					`next-session settings: backend=${configured.backend}, display=${configured.display}, capture=${configured.maxWidth}×${configured.maxHeight}`,
-				]
-			: []),
-		`model: ${modelName}`,
+		`tool: ${active ? "active" : "inactive"}`,
 		`exposure: ${exposure}`,
+		`model: ${modelName}`,
+		`configured: display=${configured.display}, maxWidth=${configured.maxWidth}, maxHeight=${configured.maxHeight}`,
+		`capabilities: ${capabilityStatus}`,
 	].join(" · ");
 }
 
@@ -151,7 +154,7 @@ async function applyComputerUseToggle(session: AgentSession, enable: boolean): P
 	}
 	session.settings.override("computer.enabled", enable);
 	return enable
-		? `Computer use enabled for this session. ${formatComputerUseStatus(session)}`
+		? `Computer use enabled for this session. ${await formatComputerUseStatus(session)}`
 		: "Computer use disabled for this session.";
 }
 
@@ -673,7 +676,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		handle: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (arg === "status") {
-				await runtime.output(formatComputerUseStatus(runtime.session));
+				await runtime.output(await formatComputerUseStatus(runtime.session));
 				return commandConsumed();
 			}
 			if (!arg || arg === "toggle" || arg === "on" || arg === "off") {
@@ -686,7 +689,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (arg === "status") {
-				runtime.ctx.showStatus(formatComputerUseStatus(runtime.ctx.session));
+				runtime.ctx.showStatus(await formatComputerUseStatus(runtime.ctx.session));
 				runtime.ctx.editor.setText("");
 				return;
 			}
@@ -1688,7 +1691,6 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "new",
-		aliases: ["clear"],
 		description: "Start a new session",
 		handleTui: async (_command, runtime) => {
 			runtime.ctx.editor.setText("");
@@ -1714,6 +1716,16 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (_command, runtime) => {
 			runtime.ctx.editor.setText("");
 			await runtime.ctx.handleFreshCommand();
+		},
+	},
+	{
+		name: "clear",
+		description: "Clear the conversation context in place, keeping the session",
+		getTuiAutocompleteDescription: runtime =>
+			runtime.ctx.session.isStreaming ? "Clear: unavailable while streaming" : "Clear: drop context, keep session",
+		handleTui: async (_command, runtime) => {
+			runtime.ctx.editor.setText("");
+			await runtime.ctx.handleResetContextCommand();
 		},
 	},
 	{
@@ -1947,7 +1959,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				case "diagnose": {
 					const hook = verb === "stats" ? backend.stats : backend.diagnose;
 					const payload = await hook?.(runtime.settings.getAgentDir(), runtime.cwd, runtime.session);
-					await runtime.output(payload ?? `Memory ${verb} is not available for the ${backend.id} backend.`);
+					await runtime.output(payload ?? memoryStatsUnavailableMessage(backend.id, verb));
 					return commandConsumed();
 				}
 				case "mm":
@@ -2628,13 +2640,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			return commandConsumed();
 		},
 		handleTui: async (_command, runtime) => {
-			// Invalidate registry fs caches and the plugin roots cache so
-			// listClaudePluginRoots re-reads from disk on next access.
-			const projectPath = await resolveActiveProjectRegistryPath(runtime.ctx.sessionManager.getCwd());
-			clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
-			await runtime.ctx.refreshSkillState();
-			await runtime.ctx.refreshSlashCommandState();
-			resetCapabilities();
+			await reloadTuiPluginState(runtime.ctx);
 			runtime.ctx.showStatus("Plugins reloaded.");
 			runtime.ctx.editor.setText("");
 		},
@@ -3060,6 +3066,24 @@ export function buildTuiBuiltinSlashCommands(runtime: TuiSlashCommandRuntime): R
 export const BUILTIN_SLASH_COMMANDS_INTERNAL: ReadonlyArray<SlashCommandSpec> = BUILTIN_SLASH_COMMAND_REGISTRY;
 
 /**
+ * Reload the interactive session's plugin runtime: invalidate fs/plugin-root
+ * caches, rediscover skills and file slash commands, reset the capability
+ * cache, and reconnect MCP servers (rebinding the session's MCP tools). Shared
+ * by `/reload-plugins`'s TUI handler and the `handle`-adapter's `reloadPlugins`
+ * hook so both honor the command's documented MCP reload scope (#7189).
+ */
+async function reloadTuiPluginState(ctx: InteractiveModeContext): Promise<void> {
+	const projectPath = await resolveActiveProjectRegistryPath(ctx.sessionManager.getCwd());
+	clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
+	await ctx.refreshSkillState();
+	await ctx.refreshSlashCommandState();
+	resetCapabilities();
+	if (ctx.mcpManager) {
+		await new MCPCommandController(ctx).reloadServers();
+	}
+}
+
+/**
  * Execute a builtin slash command in the interactive TUI.
  *
  * Returns `false` when no builtin matched. Returns `true` when a command
@@ -3107,13 +3131,7 @@ export async function executeBuiltinSlashCommand(
 				ctx.showStatus(text);
 			},
 			refreshCommands: () => ctx.refreshSlashCommandState(),
-			reloadPlugins: async () => {
-				const projectPath = await resolveActiveProjectRegistryPath(ctx.sessionManager.getCwd());
-				clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
-				await ctx.refreshSkillState();
-				await ctx.refreshSlashCommandState();
-				resetCapabilities();
-			},
+			reloadPlugins: () => reloadTuiPluginState(ctx),
 		};
 		const result = await command.handle(parsed, adapted);
 		ctx.editor.setText("");

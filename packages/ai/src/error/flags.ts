@@ -107,10 +107,17 @@ const STALE_RESPONSE_ITEM_DETAIL_PATTERN = /not[ _]?found|invalid|expired|stale|
 export const LLAMA_CPP_TOOL_CALL_PARSE_PATTERN =
 	/failed to parse tool call arguments as json|\[json\.exception\.parse_error\.101\]/i;
 
-// Copilot routing flap: HTTP 400 `model_not_supported` (structural code on the
-// error, also surfaced in text). Treated as transient — a retry usually lands
-// on a backend that has the model.
-const COPILOT_MODEL_NOT_SUPPORTED_PATTERN = /model_not_supported/i;
+// Copilot fleet skew: HTTP 400 rejecting a model that `/models` advertised on
+// the very same host. Two codes appear in the wild — `model_not_supported`
+// (per-OAuth-client rollout gap) and `model_not_available_for_integrator`
+// (replicas whose integrator allowlist predates the model). Both flap
+// request-to-request, so a retry usually lands on a backend that has the model.
+const COPILOT_TRANSIENT_MODEL_CODES: Record<string, true> = {
+	model_not_supported: true,
+	model_not_available_for_integrator: true,
+};
+const COPILOT_MODEL_UNAVAILABLE_PATTERN =
+	/model_not_supported|model_not_available_for_integrator|not available for integrator/i;
 // Anthropic strict-tool grammar too large / schema too complex (400 invalid_request_error).
 // Feature-gated deployments (Azure Foundry, Baseten, …) reject `strict: true`
 // tools outright when the hosted model lacks structured outputs, e.g.
@@ -270,6 +277,14 @@ export function isStreamReadErrorText(text: string): boolean {
 	return STREAM_READ_ERROR_PATTERN.test(text);
 }
 
+/** Persisted-text form of {@link isStreamEnvelopeError}: recognizes the
+ *  prefix-tagged envelope diagnostic on an aborted turn's `errorMessage` /
+ *  `stopDetails.explanation` so loop-level salvage can classify it after the
+ *  original `Error` instance is gone. */
+export function isStreamEnvelopeErrorText(text: string): boolean {
+	return text.includes(STREAM_ENVELOPE_ERROR_PREFIX);
+}
+
 function isTransientErrorText(text: string): boolean {
 	return (
 		isUnexpectedSocketCloseMessage(text) ||
@@ -337,8 +352,8 @@ function classifyText(errorMessage: string | undefined, errorStatus: number | un
 			kinds |= Flag.StaleResponsesItem;
 		}
 
-		// Copilot per-client routing flap is transient.
-		if (statusClean === 400 && COPILOT_MODEL_NOT_SUPPORTED_PATTERN.test(cleanMessage)) kinds |= Flag.Transient;
+		// Copilot fleet-skew model rejection is transient.
+		if (statusClean === 400 && COPILOT_MODEL_UNAVAILABLE_PATTERN.test(cleanMessage)) kinds |= Flag.Transient;
 		if (matchesStrictToolsRejection(cleanMessage, statusClean)) kinds |= Flag.Grammar;
 		if (matchesFastModeUnsupported(cleanMessage, statusClean)) kinds |= Flag.FastModeUnsupported;
 	}
@@ -452,16 +467,37 @@ export function isFastModeUnsupported(error: unknown): boolean {
 }
 
 /**
- * GitHub Copilot 400 `model_not_supported` routing flap — transient. Reads the
- * structural `code` (and falls back to {@link Flag.Transient} text classification).
+ * Depth-bounded search for a provider error `code`. SDK error objects keep the
+ * parsed response body on `.error`, and Copilot's body is itself
+ * `{ error: { code } }`, so the code sits up to two envelopes below the thrown
+ * error depending on which SDK produced it.
+ */
+function providerErrorCode(error: object): string | undefined {
+	let node: object = error;
+	for (let depth = 0; depth < 3; depth++) {
+		if ("code" in node && typeof node.code === "string") return node.code;
+		if (!("error" in node)) return undefined;
+		const nested: unknown = node.error;
+		if (!nested || typeof nested !== "object") return undefined;
+		node = nested;
+	}
+	return undefined;
+}
+
+/**
+ * GitHub Copilot 400 rejecting a model its own `/models` catalog advertises —
+ * transient fleet skew, not a malformed request. Reads the structural `code`
+ * through the SDK/body envelopes, then falls back to the stringified body both
+ * SDK families put in `message` (shapes drift; the wire text does not).
  */
 export function isCopilotTransientModelError(error: unknown): boolean {
-	if (status(error) === 400 && error && typeof error === "object") {
-		const info = error as { code?: unknown; error?: { code?: unknown } | null };
-		const code = typeof info.code === "string" ? info.code : info.error?.code;
-		if (code === "model_not_supported") return true;
-	}
-	return false;
+	if (!error || typeof error !== "object" || status(error) !== 400) return false;
+	const code = providerErrorCode(error);
+	// `Object.hasOwn`, not a bare index: `code` is provider-controlled, and a
+	// prototype key (`__proto__`, `toString`, …) would otherwise read truthy.
+	if (code !== undefined && Object.hasOwn(COPILOT_TRANSIENT_MODEL_CODES, code)) return true;
+	const message: unknown = "message" in error ? error.message : undefined;
+	return typeof message === "string" && COPILOT_MODEL_UNAVAILABLE_PATTERN.test(message);
 }
 
 export function classifyMessage(message: {

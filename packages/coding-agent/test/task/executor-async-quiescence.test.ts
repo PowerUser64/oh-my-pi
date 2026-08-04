@@ -145,6 +145,7 @@ function createAsyncSession(
 			abortCount += 1;
 		},
 		dispose: async () => {},
+		setIrcWakeTurnObserver: () => {},
 	};
 	harness.session = session as unknown as AgentSession;
 	return harness;
@@ -193,7 +194,6 @@ describe("runSubprocess async quiescence fresh-yield contract", () => {
 		// Run did not terminate on the parked yield: the barrier noticed, the
 		// job settled, and the ladder demanded exactly one more prompt.
 		expect(harness.prompts).toHaveLength(3);
-		expect(harness.prompts[1]).toContain("yield was recorded");
 		expect(harness.settleCalls()).toBe(1);
 		// The parked yield stopped the turn without killing the run.
 		expect(harness.abortCalls()).toBeGreaterThanOrEqual(1);

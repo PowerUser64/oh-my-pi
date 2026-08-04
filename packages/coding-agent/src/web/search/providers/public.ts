@@ -130,7 +130,7 @@ export async function searchPublicWeb(
 	// hard deadline; the straggler controller lets the aggregate cancel
 	// still-running engines once it decides to return.
 	const straggler = new AbortController();
-	const signal = AbortSignal.any([withHardTimeout(params.signal), straggler.signal]);
+	const signal = AbortSignal.any([withHardTimeout(params.signal, params.timeoutMs), straggler.signal]);
 
 	const responses: (SearchResponse | undefined)[] = new Array(engineIds.length);
 	const failures: { provider: { id: SearchProviderId; label: string }; error: unknown }[] = [];

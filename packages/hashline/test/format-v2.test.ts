@@ -8,14 +8,14 @@ function applyPatch(text: string, diff: string): string {
 describe("hashline format v4", () => {
 	it("replaces a concrete range with literal body rows in textual order", () => {
 		const text = "a\nb\nc";
-		const diff = ["SWAP 2.=2:", "+before", "+after"].join("\n");
+		const diff = ["PUT 2.=2:", "+before", "+after"].join("\n");
 
 		expect(applyPatch(text, diff)).toBe("a\nbefore\nafter\nc");
 	});
 
 	it("deletes a single source line", () => {
 		const text = "a\nb\nc";
-		expect(applyPatch(text, "CUT 2")).toBe("a\nc");
+		expect(applyPatch(text, "CUT 2.=2")).toBe("a\nc");
 	});
 
 	it("deletes a concrete range", () => {
@@ -23,28 +23,31 @@ describe("hashline format v4", () => {
 		expect(applyPatch(text, "CUT 2.=3")).toBe("a\nd");
 	});
 
-	it("accepts a single dot between integer range endpoints", () => {
+	it("leniently accepts common range separator variants", () => {
 		const text = "a\nb\nc\nd";
-		expect(applyPatch(text, "CUT 2.3")).toBe("a\nd");
-		expect(applyPatch(text, "SWAP 2.3:\n+middle")).toBe("a\nmiddle\nd");
+		for (const separator of ["-", ".", "=", "..", "…", " "]) {
+			expect(applyPatch(text, `CUT 2${separator}3`)).toBe("a\nd");
+			expect(applyPatch(text, `PUT 2${separator}3:\n+middle`)).toBe("a\nmiddle\nd");
+		}
 	});
 
 	it("inserts before and after concrete anchors", () => {
 		const text = "a\nb\nc";
-		const diff = ["INS.PRE 2:", "+before", "INS.POST 2:", "+after"].join("\n");
+		const diff = ["PUT <2:", "+before", "PUT >2:", "+after"].join("\n");
 		expect(applyPatch(text, diff)).toBe("a\nbefore\nb\nafter\nc");
 	});
 
 	it("inserts at head and tail", () => {
 		const text = "a\nb";
-		expect(applyPatch(text, "INS.HEAD:\n+HEAD")).toBe("HEAD\na\nb");
-		expect(applyPatch(text, "INS.TAIL:\n+TAIL")).toBe("a\nb\nTAIL");
+		expect(applyPatch(text, "PUT <1:\n+HEAD")).toBe("HEAD\na\nb");
+		expect(applyPatch(text, "PUT >$:\n+TAIL")).toBe("a\nb\nTAIL");
 	});
 
-	it("treats an empty replace hunk as a delete and still rejects empty inserts", () => {
-		const text = "a\nb\nc";
-		expect(applyPatch(text, "SWAP 2.=2:")).toBe("a\nc");
-		expect(() => parsePatch("INS.HEAD:")).toThrow(/needs at least one/);
+	it("treats an empty replace as deletion while still rejecting an empty insert", () => {
+		const result = parsePatch("PUT 2-3:");
+		expect(applyEdits("a\nb\nc\nd", result.edits).text).toBe("a\nd");
+		expect(result.warnings.some(w => /empty `PUT` body as deletion/.test(w))).toBe(true);
+		expect(() => parsePatch("PUT <1:")).toThrow(/promises body rows/);
 	});
 
 	it("rejects body rows under cut", () => {
@@ -59,8 +62,8 @@ describe("hashline format v4", () => {
 
 	it("auto-pipes bare body rows as literal text", () => {
 		const text = "a\nb\nc";
-		expect(applyPatch(text, "SWAP 2.=2:\nraw")).toBe("a\nraw\nc");
-		const { warnings } = parsePatch("SWAP 2.=2:\nraw");
+		expect(applyPatch(text, "PUT 2-2:\nraw")).toBe("a\nraw\nc");
+		const { warnings } = parsePatch("PUT 2-2:\nraw");
 		expect(warnings.some(w => /Auto-prefixed bare body row/.test(w))).toBe(true);
 	});
 
@@ -68,13 +71,13 @@ describe("hashline format v4", () => {
 		const text = "a\nb\nc";
 		// Without this fix, "3:text" becomes literal "3:text" in the file.
 		// With the fix, the "3:" prefix is stripped, yielding just "text".
-		const { edits, warnings } = parsePatch("SWAP 2.=2:\n3:replaced");
+		const { edits, warnings } = parsePatch("PUT 2-2:\n3:replaced");
 		expect(applyEdits(text, edits).text).toBe("a\nreplaced\nc");
 		expect(warnings.some(w => /Auto-prefixed bare body row/.test(w))).toBe(true);
 	});
 
 	it("validates insert anchors against file bounds", () => {
-		const edits = parsePatch("INS.PRE 4:\n+x").edits;
+		const edits = parsePatch("PUT <4:\n+x").edits;
 		expect(() => applyEdits("a\nb", edits)).toThrow(/Line 4 does not exist/);
 	});
 
@@ -86,9 +89,7 @@ describe("hashline format v4", () => {
 	});
 
 	it("rejects safe-integer ranges above the expansion limit", () => {
-		expect(() => parsePatch("SWAP 1.=100001:\n+x")).toThrow(
-			/replace range spans 100001 lines; the maximum is 100000/,
-		);
+		expect(() => parsePatch("PUT 1-100001:\n+x")).toThrow(/replace range spans 100001 lines; the maximum is 100000/);
 	});
 
 	it("ignores cutting the trailing blank sentinel of a newline-terminated file", () => {
@@ -98,17 +99,17 @@ describe("hashline format v4", () => {
 	});
 
 	it("treats a cut range ending at the trailing sentinel as ending at the last real line", () => {
-		const edits = parsePatch("CUT 2.=3").edits;
+		const edits = parsePatch("CUT 2-3").edits;
 		expect(applyEdits("a\nb\n", edits).text).toBe("a\n");
 	});
 
 	it("treats a replace range ending at the trailing sentinel as ending at the last real line", () => {
-		const edits = parsePatch("SWAP 2.=3:\n+B").edits;
+		const edits = parsePatch("PUT 2-3:\n+B").edits;
 		expect(applyEdits("a\nb\n", edits).text).toBe("a\nB\n");
 	});
 
 	it("still allows inserts anchored on the trailing blank sentinel", () => {
-		const edits = parsePatch("INS.POST 3:\n+tail").edits;
+		const edits = parsePatch("PUT >3:\n+tail").edits;
 		expect(applyEdits("a\nb\n", edits).text).toBe("a\nb\n\ntail");
 	});
 
@@ -119,12 +120,15 @@ describe("hashline format v4", () => {
 	});
 
 	it("does not flush a trailing streaming pending empty replace hunk", () => {
-		const result = parsePatchStreaming("SWAP 5.=5:\n");
+		const result = parsePatchStreaming("PUT 5-5:\n");
 		expect(result.edits).toEqual([]);
 	});
 
-	it("flushes a streaming empty replace hunk when another hunk starts", () => {
-		const result = parsePatchStreaming("SWAP 2.=2:\nINS.TAIL:\n");
-		expect(result.edits).toEqual([{ kind: "delete", anchor: { line: 2 }, lineNum: 1, index: 0 }]);
+	it("flushes a streaming CUT hunk when another hunk starts", () => {
+		const result = parsePatchStreaming("CUT 2\nPUT >$:\n");
+		expect(result.edits).toEqual([
+			{ kind: "cut", range: { start: { line: 2 }, end: { line: 2 } }, lineNum: 1, index: 0 },
+			{ kind: "delete", anchor: { line: 2 }, lineNum: 1, index: 1 },
+		]);
 	});
 });

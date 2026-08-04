@@ -103,6 +103,8 @@ export interface Usage {
 	cacheWrite: number;
 	/** Sum of input + output + cacheRead + cacheWrite plus provider-side orchestration tokens when reported. */
 	totalTokens: number;
+	/** Provider-reported occupied context tokens when the value is authoritative but not a billable input/output bucket. */
+	contextTokens?: number;
 	/** Provider-side orchestration tokens, billed but not part of the conversation prompt/cache buckets. */
 	orchestration?: {
 		/** Non-cached orchestration input tokens. */
@@ -399,6 +401,15 @@ export interface OpenAICompat {
  * that proxy gateways (Vertex AI, AWS Bedrock-style fronts, etc.) reject.
  */
 export interface AnthropicCompat {
+	/**
+	 * Stream-watchdog idle-timeout fallback in ms for slow reasoning hosts.
+	 * Set to 0 to disable the inter-event idle watchdog entirely, matching
+	 * `OpenAICompat.streamIdleTimeoutMs`.
+	 *
+	 * When unset, direct Anthropic streams use `PI_STREAM_IDLE_TIMEOUT_MS`,
+	 * then the legacy `PI_OPENAI_STREAM_IDLE_TIMEOUT_MS` alias, then 300s.
+	 */
+	streamIdleTimeoutMs?: number;
 	/**
 	 * Drop the top-level `strict: true` field on tool definitions. Vertex AI's
 	 * Anthropic-compatible endpoint rejects unknown tool fields with
@@ -710,7 +721,13 @@ export interface ResolvedOpenAIResponsesCompat extends ResolvedOpenAISharedCompa
 export type ResolvedOpenRouterCompat = ResolvedOpenAICompat & ResolvedOpenAIResponsesCompat;
 
 /** Fully-resolved anthropic-messages compat view (same contract as `ResolvedOpenAICompat`). */
-export type ResolvedAnthropicCompat = Required<AnthropicCompat> & {
+export type ResolvedAnthropicCompat = Required<Omit<AnthropicCompat, "streamIdleTimeoutMs">> & {
+	/**
+	 * Stream-watchdog idle-timeout fallback in ms for slow reasoning hosts; 0 disables the idle watchdog.
+	 * Undefined defers to `PI_STREAM_IDLE_TIMEOUT_MS`, then the legacy
+	 * `PI_OPENAI_STREAM_IDLE_TIMEOUT_MS` alias, then 300s.
+	 */
+	streamIdleTimeoutMs?: number;
 	/**
 	 * The configured endpoint is the official first-party Anthropic API
 	 * (https + exact `api.anthropic.com` host; a missing baseUrl counts as

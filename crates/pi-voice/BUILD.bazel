@@ -27,3 +27,13 @@ rust_test(
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
 )
+
+# Direct C/Rust ABI comparison for miniaudio's opaque device state on the host.
+# The patched crate also carries paired target-gated C and Rust static assertions
+# so every cross-built Linux binding gets equivalent compile-time validation.
+rust_test(
+    name = "maudio_layout_test",
+    srcs = ["bazel/maudio_layout.rs"],
+    edition = "2024",
+    deps = ["@crates//:maudio"],
+)

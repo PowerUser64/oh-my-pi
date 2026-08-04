@@ -139,7 +139,13 @@ export function resolveBlockEdits(
 							: pasteAfterBlockUnresolvedLoweredWarning(edit.anchor.line),
 					);
 					const cursor: Cursor = { kind: "after_anchor", anchor: { line: edit.anchor.line } };
-					resolved.push({ kind: "paste", cursor, lineNum: edit.lineNum, index: synthIndex++ });
+					resolved.push({
+						kind: "paste",
+						at: { kind: "gap", cursor },
+						...(edit.register === undefined ? {} : { register: edit.register }),
+						lineNum: edit.lineNum,
+						index: synthIndex++,
+					});
 					continue;
 				}
 				options.onWarning?.(
@@ -165,7 +171,9 @@ export function resolveBlockEdits(
 			const suggestions: BlockDiagnosticSuggestions = {};
 			if (nextBlock) suggestions.nextBlock = nextBlock;
 			if (enclosingBlock) suggestions.enclosingBlock = enclosingBlock;
-			throw new Error(`line ${edit.lineNum}: ${blockUnresolvedMessage(edit.anchor.line, op, lines, suggestions)}`);
+			throw new Error(
+				`line ${edit.lineNum}: ${blockUnresolvedMessage(edit.anchor.line, op, lines, suggestions, edit.register)}`,
+			);
 		}
 		if (span.start === span.end) {
 			// A single-line block resolution means line N is a bare statement, not
@@ -193,7 +201,8 @@ export function resolveBlockEdits(
 			// claiming a depth inside the block back across its trailing closers.
 			resolved.push({
 				kind: "paste",
-				cursor: { kind: "after_anchor", anchor: { line: span.end } },
+				at: { kind: "gap", cursor: { kind: "after_anchor", anchor: { line: span.end } } },
+				...(edit.register === undefined ? {} : { register: edit.register }),
 				lineNum: edit.lineNum,
 				index: synthIndex++,
 				blockStart: span.start,
@@ -205,6 +214,7 @@ export function resolveBlockEdits(
 			resolved.push({
 				kind: "cut",
 				range: { start: { line: span.start }, end: { line: span.end } },
+				...(edit.register === undefined ? {} : { register: edit.register }),
 				lineNum: edit.lineNum,
 				index: synthIndex++,
 			});
@@ -232,8 +242,20 @@ export function resolveBlockEdits(
 			}
 			continue;
 		}
-		// Mirror `SWAP start.=end:`: replacement inserts at `span.start`, then
-		// one delete per line across the resolved span.
+		if (edit.register !== undefined) {
+			// Register-backed block replace (`PUT N* @reg`): expand to a span paste
+			// over the resolved block range.
+			resolved.push({
+				kind: "paste",
+				at: { kind: "span", range: { start: { line: span.start }, end: { line: span.end } } },
+				register: edit.register,
+				lineNum: edit.lineNum,
+				index: synthIndex++,
+			});
+			continue;
+		}
+		// Body-backed block replace (`PUT N*:` + body): replacement inserts at
+		// `span.start`, then one delete per line across the resolved span.
 		for (const payload of edit.payloads) {
 			const cursor: Cursor = { kind: "before_anchor", anchor: { line: span.start } };
 			resolved.push({

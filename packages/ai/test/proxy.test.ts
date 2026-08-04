@@ -24,6 +24,8 @@ async function createSilentProxyServer(): Promise<SilentProxyServer> {
 	const accepted = Promise.withResolvers<net.Socket>();
 	const server = net.createServer(socket => {
 		sockets.add(socket);
+		socket.resume();
+		socket.on("end", () => socket.destroy());
 		socket.once("close", () => sockets.delete(socket));
 		accepted.resolve(socket);
 	});

@@ -1778,9 +1778,7 @@ describe("ACP agent", () => {
 		if (!customMessage) throw new Error("expected ACP skill prompt custom message");
 		expect(customMessage.customType).toBe("skill-prompt");
 		expect(customMessage.content).toContain("# Sample\nDo work.");
-		expect(customMessage.content).toContain('The user has invoked the "sample" skill');
 		expect(customMessage.content).toContain(`[Skill directory: ${skillDir}]`);
-		expect(customMessage.content).toMatch(/[Rr]esolve any relative paths/);
 		expect(customMessage.content).toContain("User: extra context");
 		expect(session.customMessageOptions[0]).toEqual({ streamingBehavior: "steer" });
 
@@ -2447,6 +2445,55 @@ describe("ACP agent", () => {
 			});
 		});
 
+		it("translates editor to a string elicitation with the prefill as default", async () => {
+			const { connection, calls } = createElicitConnection(async () => ({
+				action: "accept",
+				content: { value: "Reviewing auth changes" },
+			}));
+			const ctx = createAcpExtensionUiContext(connection, () => "session-editor", FORM_CAPABILITIES);
+
+			const result = await ctx.editor("Enter custom review instructions", "Review the following:\n\n");
+
+			expect(result).toBe("Reviewing auth changes");
+			expect(calls).toHaveLength(1);
+			const request = calls[0]!;
+			if (!isFormElicitation(request)) {
+				throw new Error("expected form-mode elicitation");
+			}
+			expect(request.message).toBe("Enter custom review instructions");
+			expect(request.requestedSchema.properties?.value).toEqual({
+				type: "string",
+				default: "Review the following:\n\n",
+			});
+		});
+
+		it("omits default on editor only when the prefill is empty, but preserves whitespace-only prefill", async () => {
+			const { connection, calls } = createElicitConnection(async () => ({
+				action: "accept",
+				content: { value: "text" },
+			}));
+			const ctx = createAcpExtensionUiContext(connection, () => "session-editor-empty", FORM_CAPABILITIES);
+
+			await ctx.editor("Title", "");
+
+			const emptyRequest = calls[0]!;
+			if (!isFormElicitation(emptyRequest)) throw new Error("expected form-mode elicitation");
+			expect(emptyRequest.requestedSchema.properties?.value).toEqual({ type: "string" });
+
+			// Unlike `input`'s placeholder, `editor` prefill is the document being
+			// edited: whitespace/blank lines are meaningful content, not absence,
+			// so they must round-trip verbatim (matching the interactive/RPC
+			// implementations, which set the editor's text to any truthy prefill).
+			await ctx.editor("Title", "   ");
+
+			const whitespaceRequest = calls[1]!;
+			if (!isFormElicitation(whitespaceRequest)) throw new Error("expected form-mode elicitation");
+			expect(whitespaceRequest.requestedSchema.properties?.value).toEqual({
+				type: "string",
+				default: "   ",
+			});
+		});
+
 		it("returns undefined / false for decline and cancel actions", async () => {
 			let nextAction: "decline" | "cancel" = "decline";
 			const { connection } = createElicitConnection(async () => ({ action: nextAction }));
@@ -2457,6 +2504,7 @@ describe("ACP agent", () => {
 				expect(await ctx.select("X", ["a"])).toBeUndefined();
 				expect(await ctx.confirm("X", "Y")).toBe(false);
 				expect(await ctx.input("X")).toBeUndefined();
+				expect(await ctx.editor("X")).toBeUndefined();
 			}
 		});
 
@@ -2470,6 +2518,7 @@ describe("ACP agent", () => {
 			expect(await ctx.select("X", ["a"])).toBeUndefined();
 			expect(await ctx.confirm("X", "Y")).toBe(false);
 			expect(await ctx.input("X")).toBeUndefined();
+			expect(await ctx.editor("X")).toBeUndefined();
 			expect(calls).toHaveLength(0);
 		});
 

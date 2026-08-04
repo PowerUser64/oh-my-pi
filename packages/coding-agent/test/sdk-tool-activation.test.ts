@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:te
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import type { Model, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
@@ -21,7 +22,6 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { VIBE_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/vibe";
 import { logger, removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 
 const toolActivationExtension: ExtensionFactory = pi => {
 	pi.registerTool({
@@ -187,11 +187,12 @@ describe("createAgentSession defaultInactive tool activation", () => {
 
 		try {
 			expect(session.getActiveToolNames()).toEqual(
-				expect.arrayContaining(["read", "default_inactive_tool", "write"]),
+				expect.arrayContaining(["read", "default_inactive_tool", "default_active_tool"]),
 			);
-			expect(session.getActiveToolNames()).not.toContain("default_active_tool");
-			expect(session.getXdevToolEntries().map(entry => entry.name)).toContain("default_active_tool");
-			expect(session.getXdevToolEntries().map(entry => entry.name)).not.toContain("default_inactive_tool");
+			// No granted write tool → no xd:// transport: extension tools surface
+			// top-level instead of mounting with an auto-granted write.
+			expect(session.getActiveToolNames()).not.toContain("write");
+			expect(session.getXdevToolEntries()).toEqual([]);
 			expect(session.systemPrompt.join("\n")).toContain("default_inactive_tool");
 		} finally {
 			await session.dispose();
@@ -536,14 +537,21 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		try {
 			const activeToolNames = normal.getActiveToolNames();
 			expect(activeToolNames).toEqual(
-				expect.arrayContaining(["read", "yield", "generate_image", "learn", "manage_skill", "write"]),
+				expect.arrayContaining([
+					"read",
+					"yield",
+					"generate_image",
+					"learn",
+					"manage_skill",
+					"tts",
+					"default_active_tool",
+					"sdk_custom_tool",
+				]),
 			);
-			for (const name of ["tts", "default_active_tool", "sdk_custom_tool"]) {
-				expect(activeToolNames).not.toContain(name);
-			}
-			expect(normal.getXdevToolEntries().map(entry => entry.name)).toEqual(
-				expect.arrayContaining(["tts", "default_active_tool", "sdk_custom_tool"]),
-			);
+			// Without a granted write tool the session allocates no xd:// state;
+			// SDK custom and extension capabilities surface top-level instead.
+			expect(activeToolNames).not.toContain("write");
+			expect(normal.getXdevToolEntries()).toEqual([]);
 			expect(normal.getAllToolNames()).toEqual(
 				expect.arrayContaining([
 					"generate_image",
@@ -628,7 +636,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 	// roster is built once, at creation — switching to Cursor later does not
 	// rebuild it. These two cover both directions of that wiring: the granted
 	// session must still reach a replace-mode instance for `pi_edit` (whose
-	// `old_text`/`new_text` args do not validate against the default `hashline`
+	// `old_string`/`new_string` args do not validate against the default `hashline`
 	// schema), and the restricted one must still be refused.
 	//
 	// The handlers are internal to the session; `streamFn` is where they are
@@ -785,7 +793,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 									type: "toolCall",
 									id: toolCallId,
 									name: "edit",
-									arguments: { path: target, edits: [{ old_text: "beta", new_text: "gamma" }] },
+									arguments: { path: target, old_string: "beta", new_string: "gamma" },
 								},
 							],
 						},

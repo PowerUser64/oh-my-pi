@@ -16,7 +16,7 @@ For packaged user-facing extension CLIs/features such as `packages/swarm-extensi
 
 ## What an extension is
 
-An extension is a TS/JS module exporting a default factory:
+An extension is a TS/JS module exporting a default factory. Factories may initialize synchronously or return a promise:
 
 ```ts
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
@@ -132,8 +132,9 @@ In interactive mode, `input` handlers run before the built-in first-message auto
 Also exposed:
 
 - `pi.logger`
+- `pi.arktype` (the ArkType `Type` runtime; this is not ArkType's `type(...)` schema builder)
+- `pi.zod` (injected `zod/v4` module for Zod-authored tool parameter schemas)
 - `pi.typebox` (zod-backed compatibility shim for legacy TypeBox-style schemas)
-- `pi.zod` (injected `zod/v4` module — canonical for tool parameter schemas)
 - `pi.pi` (package exports)
 
 ### Message delivery semantics
@@ -157,6 +158,7 @@ Handlers and tool `execute` receive `ctx` with:
 - `sessionManager` (read-only)
 - `modelRegistry`, `model`
 - `models` (read-only model query — see below)
+- `localProtocolOptions` (optional calling-session `local://` root mapping for external tool bridges)
 - `getContextUsage()`
 - `getAsyncJobSnapshot()` returns the current session's read-only async-job snapshot, or `null` when no session owns the context
 - `compact(...)`
@@ -203,7 +205,7 @@ If you use raw `setInterval`/`setTimeout` or detached promises instead, you own 
 const current = ctx.models.current();
 const contrasting = ctx.models
   .list()
-  .find(m => current && ctx.models.family(m) !== ctx.models.family(current));
+  .find((m) => current && ctx.models.family(m) !== ctx.models.family(current));
 ```
 
 ## 3) Command context (`ExtensionCommandContext`)
@@ -276,11 +278,13 @@ Cancelable pre-events:
 Bridging a push-capable MCP into a session steer:
 
 ```ts
-pi.on("mcp_notification", event => {
+pi.on("mcp_notification", (event) => {
   if (event.server !== "peer-bus") return;
   if (event.method !== "notifications/peer_message") return;
   const params = event.params as { from: string; text: string };
-  pi.sendUserMessage(`[from ${params.from}] ${params.text}`, { deliverAs: "steer" });
+  pi.sendUserMessage(`[from ${params.from}] ${params.text}`, {
+    deliverAs: "steer",
+  });
 });
 ```
 
@@ -298,7 +302,7 @@ Current runtime note: `ExtensionRunner.emitResourcesDiscover(...)` is implemente
 
 ## Tool authoring details
 
-`registerTool` uses `ToolDefinition` from `types.ts`.
+`registerTool` uses `ToolDefinition` from `types.ts`. Its `parameters` field accepts ArkType or Zod schemas; the injected TypeBox compatibility shim remains available for legacy extensions.
 
 Current `execute` signature:
 
@@ -311,6 +315,26 @@ execute(
 	ctx,
 ): Promise<AgentToolResult>
 ```
+
+### Delegating to a native built-in (`ctx.invokeTool`)
+
+A tool that re-registers a built-in name (e.g. wrapping `write` to add logging or a policy check) can
+run the original instead of reimplementing it. When your registered tool shadows a built-in, the `ctx`
+passed to `execute` carries:
+
+```ts
+ctx.invokeTool?<TDetails>(
+  params: Record<string, unknown>,
+  options?: { signal?: AbortSignal; onUpdate?: AgentToolUpdateCallback },
+): Promise<AgentToolResult<TDetails>>
+```
+
+It runs the **native** built-in of the same name as your tool (delegation is same-tool only, so it
+cannot reach an arbitrary target or escalate past the approval already granted for this call) and
+returns its result, including the native tool's own side effects and internal bookkeeping. It is
+present only when a native built-in of that name exists — `ctx.invokeTool` is `undefined` for a
+net-new tool that shadows no built-in. The native call is not re-gated, since it is the same tool you
+are already approved as, and delegation depth is guarded against accidental self-recursion.
 
 Template:
 
@@ -344,7 +368,7 @@ pi.registerTool({
 });
 ```
 
-`tool_call`/`tool_result` intercept all tools once the registry is wrapped in `sdk.ts`, including built-ins and extension/custom tools. `ToolDefinition` also supports optional `hidden`, `defaultInactive`, `deferrable`, `approval`, `mcpServerName`, `mcpToolName`, `renderCall`, and `renderResult` fields.
+`tool_call`/`tool_result` intercept all tools once the registry is wrapped in `sdk.ts`, including built-ins and extension/custom tools. `ToolDefinition` also supports optional `hidden`, `defaultInactive`, `loadMode` (`"discoverable"` by default, or `"essential"`), `deferrable`, `approval` (`"exec"` by default), `strict`, `mcpServerName`, `mcpToolName`, `renderCall`, and `renderResult` fields.
 
 ## UI integration points
 
@@ -391,13 +415,13 @@ When no UI context is supplied to runner init, `ctx.hasUI` is `false` and method
 
 ### ACP mode
 
-ACP installs an elicitation-bridged UI context (`createAcpExtensionUiContext` in `acp-agent.ts`). `ctx.hasUI` is `true` while only `select`/`confirm`/`input` round-trip (as ACP elicitations; defaults are returned when the client lacks the `elicitation.form` capability). The non-elicitation surface (widgets, editor, theming, terminal input, autocomplete stacking) is stubbed no-op.
+ACP installs an elicitation-bridged UI context (`createAcpExtensionUiContext` in `acp-agent.ts`). `ctx.hasUI` is `true` while `select`/`confirm`/`input`/`editor` round-trip (as ACP elicitations; defaults are returned when the client lacks the `elicitation.form` capability). The non-elicitation surface (widgets, theming, terminal input, autocomplete stacking) is stubbed no-op.
 
 ## Session and state patterns
 
 For durable extension state:
 
-1. Persist with `pi.appendEntry(customType, data)`.
+1. Persist with `pi.appendEntry("com.example.my-extension.state", data)`. The `customType` namespace is global: use a package- or reverse-domain-qualified value and avoid the core-reserved values in the [`custom` session-entry reference](./session.md#custom).
 2. Rebuild state from `ctx.sessionManager.getBranch()` on `session_start`, `session_branch`, `session_tree`.
 3. Keep tool result `details` structured when state should be visible/reconstructible from tool result history.
 
@@ -407,7 +431,10 @@ Example reconstruction pattern:
 pi.on("session_start", async (_event, ctx) => {
   let latest;
   for (const entry of ctx.sessionManager.getBranch()) {
-    if (entry.type === "custom" && entry.customType === "my-state") {
+    if (
+      entry.type === "custom" &&
+      entry.customType === "com.example.my-extension.state"
+    ) {
       latest = entry.data;
     }
   }
@@ -434,7 +461,9 @@ import { Container, Text } from "@oh-my-pi/pi-tui";
 
 pi.registerAssistantThinkingRenderer((context, theme) => {
   const container = new Container();
-  container.addChild(new Text(theme.fg("dim", `thinking chars: ${context.text.length}`), 1, 0));
+  container.addChild(
+    new Text(theme.fg("dim", `thinking chars: ${context.text.length}`), 1, 0),
+  );
   return container;
 });
 ```

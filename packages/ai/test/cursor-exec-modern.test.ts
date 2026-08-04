@@ -27,6 +27,8 @@ import {
 	ConnectScmSuccessSchema,
 	ConnectScmToolCallSchema,
 	ConversationSearchArgsSchema,
+	ConversationStateStructureSchema,
+	ConversationTokenDetailsSchema,
 	type ExecServerMessage,
 	ExecServerMessageSchema,
 	ExecuteHookArgsSchema,
@@ -196,6 +198,39 @@ function soleResult(frames: AgentClientMessage[]) {
 describe("Cursor modern exec protocol activation", () => {
 	it("advertises the client build whose schema includes modern exec frames", () => {
 		expect(CURSOR_CLIENT_VERSION).toBe("cli-2026.07.23-e383d2b");
+	});
+});
+
+describe("Cursor conversation checkpoints", () => {
+	it("records checkpoint-only occupancy without billing it as token usage", async () => {
+		const output = cursorAssistantMessage();
+
+		await handleServerMessage(
+			create(AgentServerMessageSchema, {
+				message: {
+					case: "conversationCheckpointUpdate",
+					value: create(ConversationStateStructureSchema, {
+						tokenDetails: create(ConversationTokenDetailsSchema, { usedTokens: 120_000 }),
+					}),
+				},
+			}),
+			output,
+			new AssistantMessageEventStream(),
+			newBlockState(),
+			new Map(),
+			{ write: () => true } as unknown as Parameters<typeof handleServerMessage>[5],
+			undefined,
+			undefined,
+			{ sawTokenDelta: false },
+			[],
+		);
+
+		expect(output.usage).toMatchObject({
+			contextTokens: 120_000,
+			input: 0,
+			output: 0,
+			totalTokens: 0,
+		});
 	});
 });
 
@@ -1196,11 +1231,11 @@ describe("Cursor modern exec frames: Pi tools", () => {
 		expect(answer.value.result.value.diff).toBe("-before\n+after");
 		expect(answer.value.result.value.patch).toBe("@@");
 
-		// The synthesized display block must use the local edit tool's snake_case
-		// replace schema, or the rebuilt transcript renders empty edits.
+		// The synthesized display block must use the local edit tool's replace
+		// schema, or the rebuilt transcript renders empty edits.
 		const block = output.content.find((b): b is ToolCallState => b.type === "toolCall");
 		expect(block?.name).toBe("edit");
-		expect(block?.arguments).toEqual({ path: "/repo/a.ts", edits: [{ old_text: "before", new_text: "after" }] });
+		expect(block?.arguments).toEqual({ path: "/repo/a.ts", old_string: "before", new_string: "after" });
 	});
 
 	it("answers each remaining Pi frame with a populated success payload", async () => {

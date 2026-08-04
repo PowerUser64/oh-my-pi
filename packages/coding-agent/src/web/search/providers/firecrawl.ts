@@ -38,6 +38,7 @@ export interface FirecrawlSearchParams {
 	/** Explicit `tbs` (custom date range); takes precedence over `recency`. */
 	tbs?: string;
 	signal?: AbortSignal;
+	timeoutMs?: number;
 	fetch?: FetchImpl;
 }
 
@@ -91,7 +92,7 @@ async function callFirecrawlSearch(
 		method: "POST",
 		headers,
 		body: JSON.stringify(buildRequestBody(params)),
-		signal: withHardTimeout(params.signal),
+		signal: withHardTimeout(params.signal, params.timeoutMs),
 	});
 
 	if (!response.ok) {
@@ -145,6 +146,7 @@ export async function searchFirecrawl(params: SearchParams): Promise<SearchRespo
 		recency: params.recency,
 		tbs,
 		signal: params.signal,
+		timeoutMs: params.timeoutMs,
 		fetch: params.fetch,
 	};
 	const keyResolver = params.authStorage.resolver("firecrawl", {

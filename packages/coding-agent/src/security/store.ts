@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getSecurityProjectDir, isEnoent } from "@oh-my-pi/pi-utils";
-import { withFileLock } from "../config/file-lock";
+import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import * as git from "../utils/git";
 import { compareSecurityLineage } from "./comparison";
 import type {
@@ -34,7 +34,7 @@ const SECURITY_STORE_WRITE_CHAINS = new Map<string, Promise<unknown>>();
 async function withSecurityStoreWrite<T>(key: string, operation: () => Promise<T>): Promise<T> {
 	const lockTarget = path.join(key, "index.json");
 	const run = (SECURITY_STORE_WRITE_CHAINS.get(key) ?? Promise.resolve()).then(() =>
-		withFileLock(lockTarget, operation, { staleMs: 60_000, retries: 200, retryDelayMs: 50 }),
+		withFileLock(lockTarget, operation, { retries: 200, retryDelayMs: 50 }),
 	);
 	const guarded = run.catch(() => undefined);
 	SECURITY_STORE_WRITE_CHAINS.set(key, guarded);

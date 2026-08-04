@@ -150,13 +150,20 @@ crate.from_cargo(
 )
 
 # audiopus_sys builds its vendored opus via the `cmake` crate: give the build
-# script a PATH that resolves cmake/make (runner image, GH runners, dev hosts)
-# and the policy override its old CMakeLists needs under CMake 4.x. The cmake
+# script a PATH that resolves cmake/make (runner image, GH runners, NixOS, and
+# other dev hosts) and the policy override its old CMakeLists needs under CMake
+# 4.x. The patch pins CMAKE_INSTALL_LIBDIR=lib because the crate always links
+# from <prefix>/lib while CMake uses lib64 on some aarch64 systems. The cmake
 # crate picks up CC/CFLAGS from the Bazel cc toolchain on its own.
 crate.annotation(
     crate = "audiopus_sys",
+    patches = ["//bazel/patches:audiopus-sys-libdir.patch"],
+    patch_args = ["-p1"],
     build_script_env = {
         "CMAKE_POLICY_VERSION_MINIMUM": "3.5",
+        # Release artifacts must use the vendored Opus rather than a host
+        # pkg-config result whose library may not exist on the target system.
+        "OPUS_NO_PKG": "1",
         # msvc cross only (cmake-rs reads VAR_<triple> before VAR; the key is
         # inert for every other target): without a generator override cmake-rs
         # insists on a Visual Studio generator for msvc targets, which cannot
@@ -174,7 +181,7 @@ crate.annotation(
         # the UBSan runtime. Opus shipped without sanitizers under
         # cargo-zigbuild too.
         "CFLAGS": "-fno-sanitize=undefined",
-        "PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin",
+        "PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:/run/current-system/sw/bin",
     },
 )
 
@@ -195,7 +202,8 @@ crate.annotation(
 # `generate-bindings` is enabled for darwin so miniaudio's Rust bindings match
 # its CoreAudio C layout. Build scripts execute for the host, however, so a
 # macOS-hosted Linux cross-build also sees that feature. Use Cargo's TARGET to
-# keep bindgen darwin-only and select pregenerated bindings for other targets.
+# keep bindgen darwin-only and select checked GNU/musl bindings by compilation
+# target, including ARM64's larger glibc pthread layouts.
 crate.annotation(
     crate = "maudio-sys",
     patches = ["//bazel/patches:maudio-sys-target-bindings.patch"],

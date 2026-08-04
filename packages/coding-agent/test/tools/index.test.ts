@@ -150,10 +150,21 @@ describe("createTools", () => {
 
 	it("creates xd:// presentation state without remounting explicitly requested built-ins", async () => {
 		const session = createTestSession();
-		const tools = await createTools(session, ["read", "lsp"]);
+		const tools = await createTools(session, ["read", "lsp", "write"]);
 
 		expect(session.xdev).toBeDefined();
 		expect(session.xdev?.mountedNames.size).toBe(0);
+		expect(tools.map(tool => tool.name)).toEqual(["read", "lsp", "write"]);
+	});
+
+	it("skips xd:// state entirely when the session grants no write tool", async () => {
+		// The xd:// transport rides `write xd://<tool>`; without a granted write
+		// tool nothing can dispatch a device, so no state is allocated and later
+		// SDK assembly exposes custom/MCP tools top-level instead.
+		const session = createTestSession();
+		const tools = await createTools(session, ["read", "lsp"]);
+
+		expect(session.xdev).toBeUndefined();
 		expect(tools.map(tool => tool.name)).toEqual(["read", "lsp"]);
 	});
 

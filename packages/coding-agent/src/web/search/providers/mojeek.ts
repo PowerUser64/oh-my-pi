@@ -137,13 +137,14 @@ function isRobotPage(page: LoadedHtmlPage): boolean {
 }
 
 async function callMojeekHtml(params: SearchParams, numResults: number): Promise<string> {
-	const signal = withHardTimeout(params.signal);
+	const signal = withHardTimeout(params.signal, params.timeoutMs);
 	const url = buildSearchUrl(params, numResults);
 	let page: LoadedHtmlPage;
 	try {
 		page = await browserFetch(url, {
 			fetch: params.fetch,
 			signal,
+			timeoutMs: params.timeoutMs,
 			randomizeHeaders: false,
 			referer: MOJEEK_HOME_URL,
 			browser: {

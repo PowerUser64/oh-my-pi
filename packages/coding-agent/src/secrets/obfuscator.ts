@@ -594,18 +594,22 @@ export class SecretObfuscator {
 	/** Whether any secrets were configured */
 	#hasAny: boolean;
 
-	/** Private per-install (or per-process) key for the keyed placeholder digest. */
-	readonly #key: string;
+	/**
+	 * Private per-install (or per-process) key for the keyed placeholder digest.
+	 * Resolved lazily when the constructor received a key PROVIDER: the first
+	 * placeholder mint or keyed fallback marker triggers resolution, so callers
+	 * can defer persisting `secret-placeholder.key` until a dynamic regex entry
+	 * actually matches session content.
+	 */
+	#key: string | undefined;
+	#keyProvider: (() => string) | undefined;
 
-	constructor(entries: SecretEntry[], key: string = defaultPlaceholderKey()) {
-		this.#key = key;
-		// The keyed-hash key makes obfuscate-mode placeholder bases un-dictionaryable,
-		// but it can be persisted in a user-readable file (`secret-placeholder.key`).
-		// A prompt-injected tool read (read/bash) could otherwise surface it to the
-		// provider verbatim and undo that protection, so redact the key itself from
-		// obfuscated (provider-visible) output as a one-way secret.
-		this.#replaceMappings.set(key, this.#generateSecretReplacement(key));
-		this.#configuredSecretValues.add(key);
+	constructor(entries: SecretEntry[], key: string | (() => string) = defaultPlaceholderKey()) {
+		if (typeof key === "function") {
+			this.#keyProvider = key;
+		} else {
+			this.#setPlaceholderKey(key);
+		}
 		// Collect every configured plain-secret literal AND compile every regex
 		// entry BEFORE minting any placeholder below, so a placeholder's friendly
 		// name (checked against both in `#createPlaceholder`) can never embed a
@@ -671,6 +675,44 @@ export class SecretObfuscator {
 		this.#hasAny = hasRealSec;
 	}
 
+	/**
+	 * The keyed-hash key makes obfuscate-mode placeholder bases un-dictionaryable,
+	 * but it can be persisted in a user-readable file (`secret-placeholder.key`).
+	 * A prompt-injected tool read (read/bash) could otherwise surface it to the
+	 * provider verbatim and undo that protection, so redact the key itself from
+	 * obfuscated (provider-visible) output as a one-way secret.
+	 */
+	#setPlaceholderKey(key: string): void {
+		this.#key = key;
+		this.#replaceMappings.set(key, this.#generateSecretReplacement(key));
+		this.#configuredSecretValues.add(key);
+	}
+
+	/** Resolve the placeholder key once, minting its self-redaction on first use. */
+	#getKey(): string {
+		let key = this.#key;
+		if (key === undefined) {
+			key = this.#keyProvider?.() ?? defaultPlaceholderKey();
+			this.#keyProvider = undefined;
+			this.#setPlaceholderKey(key);
+		}
+		return key;
+	}
+
+	/** Whether this pass will mint a keyed placeholder from a regex match. */
+	#willMintRegexPlaceholder(secretValues: ReadonlySet<string>): boolean {
+		for (const entry of this.#regexEntries) {
+			if (entry.mode !== "obfuscate") continue;
+			for (const value of secretValues) {
+				entry.regex.lastIndex = 0;
+				const matches = entry.regex.test(value);
+				entry.regex.lastIndex = 0;
+				if (matches) return true;
+			}
+		}
+		return false;
+	}
+
 	hasSecrets(): boolean {
 		return this.#hasAny;
 	}
@@ -681,6 +723,13 @@ export class SecretObfuscator {
 		this.#currentRegexSecretValues = this.collectRegexSecretValuesForObfuscation(text);
 		for (const secretValue of sharedRegexSecretValues ?? []) {
 			this.#currentRegexSecretValues.add(secretValue);
+		}
+		// Resolve a lazy key before the replace phase whenever this pass will mint
+		// a regex placeholder. The key registers itself as a replace-mode secret;
+		// resolving it later, while processing the regex match, would expose key
+		// bytes already present in this same provider-visible input.
+		if (this.#keyProvider !== undefined && this.#willMintRegexPlaceholder(this.#currentRegexSecretValues)) {
+			this.#getKey();
 		}
 		let result = text;
 		// `origin` runs parallel to `result` (one tag char per result char): "I" for
@@ -937,7 +986,9 @@ export class SecretObfuscator {
 		// remainder bytes that merely look sentinel-shaped (e.g. `ZZZZ`) cannot equal
 		// the marker and are still redacted instead of passed through.
 		const replacement =
-			chunk.length <= 2 ? "Z".repeat(chunk.length) : `ZZ${buildKeyedReplacementRun(this.#key, chunk.length - 2)}`;
+			chunk.length <= 2
+				? "Z".repeat(chunk.length)
+				: `ZZ${buildKeyedReplacementRun(this.#getKey(), chunk.length - 2)}`;
 		this.#generatedReplaceChunks.add(replacement);
 		return replacement;
 	}
@@ -1023,7 +1074,9 @@ export class SecretObfuscator {
 			// the ordinary keyed-run fallback #generateReplacement already uses.
 			replacement =
 				stable ??
-				(value.length <= 2 ? buildKeyedReplacementRun(this.#key, value.length) : this.#generateReplacement(value));
+				(value.length <= 2
+					? buildKeyedReplacementRun(this.#getKey(), value.length)
+					: this.#generateReplacement(value));
 			regex.lastIndex = 0;
 		}
 		this.#generatedReplaceChunks.add(replacement);
@@ -1183,7 +1236,9 @@ export class SecretObfuscator {
 
 		for (let attempt = 0; ; attempt++) {
 			const base =
-				attempt === 0 ? buildHashBase(this.#key, baseKey) : buildHashBase(this.#key, `${baseKey}\0${attempt}`);
+				attempt === 0
+					? buildHashBase(this.#getKey(), baseKey)
+					: buildHashBase(this.#getKey(), `${baseKey}\0${attempt}`);
 			const owner = this.#placeholderBaseOwners.get(base);
 			if (owner !== undefined && owner !== baseKey) continue;
 			this.#placeholderBaseOwners.set(base, baseKey);
@@ -1195,7 +1250,7 @@ export class SecretObfuscator {
 	#reserveFallbackPlaceholderBase(baseKey: string, startAttempt: number): string {
 		for (let attempt = startAttempt; ; attempt++) {
 			const owner = `${baseKey}\0collision\0${attempt}`;
-			const base = buildHashBase(this.#key, `${baseKey}\0collision\0${attempt}`);
+			const base = buildHashBase(this.#getKey(), `${baseKey}\0collision\0${attempt}`);
 			if (this.#placeholderBaseOwners.has(base)) continue;
 			this.#placeholderBaseOwners.set(base, owner);
 			return base;

@@ -15,7 +15,7 @@ import {
 } from "@oh-my-pi/pi-catalog/model-thinking";
 import { CATALOG_PROVIDERS, type ProviderCatalogEntry } from "@oh-my-pi/pi-catalog/provider-models";
 import { CODEX_BASE_URL } from "@oh-my-pi/pi-catalog/wire/codex";
-import { $env, $pickenv, getConfigRootDir, isEnoent, logger, withExtraCaFetch } from "@oh-my-pi/pi-utils";
+import { $env, $pickenv, getProviderInFlightRoot, isEnoent, logger, withExtraCaFetch } from "@oh-my-pi/pi-utils";
 import { getCustomApi } from "./api-registry";
 import { createAuthRetryKeyState, isApiKeyResolver, resolveNextAuthRetryKey } from "./auth-retry";
 import * as AIError from "./error";
@@ -60,7 +60,7 @@ import {
 	streamOpenAIResponses,
 } from "./providers/register-builtins";
 import { isSyntheticModel, streamSynthetic } from "./providers/synthetic";
-import { PROVIDER_REGISTRY } from "./registry";
+import { getProviderDefinition, PROVIDER_REGISTRY } from "./registry";
 import type {
 	Api,
 	AssistantMessage,
@@ -189,7 +189,7 @@ function resolveProviderInFlightLimit(
 
 function providerInFlightRoot(): string {
 	if (providerInFlightRootOverride) return providerInFlightRootOverride;
-	return path.join(getConfigRootDir(), "run", "provider-inflight");
+	return getProviderInFlightRoot();
 }
 
 function providerInFlightSegment(provider: string): string {
@@ -812,33 +812,37 @@ function streamDispatch<TApi extends Api>(
 		} as GitLabDuoWorkflowOptions);
 	}
 
-	// Vertex AI uses Application Default Credentials, not API keys
+	// Vertex AI and Bedrock Converse authenticate outside the generic API-key path.
 	if (model.api === "google-vertex") {
 		return streamGoogleVertex(model as Model<"google-vertex">, context, requestOptions as GoogleVertexOptions);
-	} else if (model.api === "bedrock-converse-stream") {
-		// Bedrock doesn't have any API keys instead it sources credentials from standard AWS env variables or from given AWS profile.
+	}
+	if (model.api === "bedrock-converse-stream") {
 		return streamBedrock(model as Model<"bedrock-converse-stream">, context, requestOptions as BedrockOptions);
 	}
 
-	const apiKey = requestOptions.apiKey || getEnvApiKey(model.provider);
+	const prepareRequest = getProviderDefinition(model.provider)?.prepareRequest;
+	const prepared = prepareRequest?.(model as Model<Api>, requestOptions as StreamOptions);
+	const providerModel = prepared?.model ?? (model as Model<Api>);
+	const preparedOptions = prepared?.options ?? (requestOptions as StreamOptions);
+	const apiKey = preparedOptions.apiKey || getEnvApiKey(providerModel.provider);
 	if (!apiKey) {
-		throw new AIError.MissingApiKeyError(model.provider);
+		throw new AIError.MissingApiKeyError(providerModel.provider);
 	}
-	const providerOptions = isGoogleVertexAuthenticatedModel(model)
+	const providerOptions = isGoogleVertexAuthenticatedModel(providerModel)
 		? {
-				...requestOptions,
+				...preparedOptions,
 				apiKey: "vertex-adc",
-				fetch: createVertexAuthenticatedFetch(requestOptions),
+				fetch: createVertexAuthenticatedFetch(preparedOptions),
 			}
-		: { ...requestOptions, apiKey };
+		: { ...preparedOptions, apiKey };
 
-	const api: Api = model.api;
+	const api: Api = providerModel.api;
 	switch (api) {
 		case "anthropic-messages": {
 			const anthropicOptions = providerOptions as AnthropicOptions;
-			return streamAnthropic(model as Model<"anthropic-messages">, context, {
+			return streamAnthropic(providerModel as Model<"anthropic-messages">, context, {
 				...anthropicOptions,
-				isOAuth: anthropicOptions.isOAuth ?? model.isOAuth,
+				isOAuth: anthropicOptions.isOAuth ?? providerModel.isOAuth,
 			});
 		}
 
@@ -846,13 +850,13 @@ function streamDispatch<TApi extends Api>(
 			const useResponses = $env.PI_OPENROUTER_RESPONSES !== "0";
 			if (useResponses) {
 				return streamOpenAIResponses(
-					model as Model<"openai-responses">,
+					providerModel as Model<"openai-responses">,
 					context,
 					providerOptions as OptionsForApi<"openai-responses">,
 				);
 			}
 			return streamOpenAICompletions(
-				model as Model<"openai-completions">,
+				providerModel as Model<"openai-completions">,
 				context,
 				providerOptions as OptionsForApi<"openai-completions">,
 			);
@@ -860,50 +864,50 @@ function streamDispatch<TApi extends Api>(
 
 		case "openai-completions":
 			return streamOpenAICompletions(
-				model as Model<"openai-completions">,
+				providerModel as Model<"openai-completions">,
 				context,
 				providerOptions as OptionsForApi<"openai-completions">,
 			);
 
 		case "openai-responses":
 			return streamOpenAIResponses(
-				model as Model<"openai-responses">,
+				providerModel as Model<"openai-responses">,
 				context,
 				providerOptions as OptionsForApi<"openai-responses">,
 			);
 
 		case "azure-openai-responses":
 			return streamAzureOpenAIResponses(
-				model as Model<"azure-openai-responses">,
+				providerModel as Model<"azure-openai-responses">,
 				context,
 				providerOptions as OptionsForApi<"azure-openai-responses">,
 			);
 
 		case "openai-codex-responses":
 			return streamOpenAICodexResponses(
-				model as Model<"openai-codex-responses">,
+				providerModel as Model<"openai-codex-responses">,
 				context,
 				providerOptions as OptionsForApi<"openai-codex-responses">,
 			);
 
 		case "google-generative-ai":
-			return streamGoogle(model as Model<"google-generative-ai">, context, providerOptions);
+			return streamGoogle(providerModel as Model<"google-generative-ai">, context, providerOptions);
 
 		case "google-gemini-cli":
 			return streamGoogleGeminiCli(
-				model as Model<"google-gemini-cli">,
+				providerModel as Model<"google-gemini-cli">,
 				context,
 				providerOptions as GoogleGeminiCliOptions,
 			);
 
 		case "ollama-chat":
-			return streamOllama(model as Model<"ollama-chat">, context, providerOptions as OllamaChatOptions);
+			return streamOllama(providerModel as Model<"ollama-chat">, context, providerOptions as OllamaChatOptions);
 
 		case "cursor-agent":
-			return streamCursor(model as Model<"cursor-agent">, context, providerOptions as CursorOptions);
+			return streamCursor(providerModel as Model<"cursor-agent">, context, providerOptions as CursorOptions);
 
 		case "devin-agent":
-			return streamDevin(model as Model<"devin-agent">, context, providerOptions as DevinOptions);
+			return streamDevin(providerModel as Model<"devin-agent">, context, providerOptions as DevinOptions);
 
 		default:
 			throw new AIError.ConfigurationError(`Unhandled API: ${api}`);
@@ -1028,12 +1032,10 @@ export function streamSimple<TApi extends Api>(
 	if (apiKeyResolver) {
 		const outer = new AssistantMessageEventStream();
 		const signal = requestOptions?.signal;
-		// One inner attempt against a resolved string key. A retryable auth error
-		// that arrives before any replay-unsafe event is buffered and returned
-		// (so the caller can retry with a fresh key) instead of surfaced. Once any
-		// non-start event escapes, retry is no longer safe and the failure is
-		// emitted directly.
-		const runAttempt = async (apiKey: string): Promise<AuthRetryFailure | undefined> => {
+		// One inner attempt against a resolved key, or against the Bedrock AWS
+		// credential chain when its optional resolver has no stored bearer key.
+		// Retryable auth failures are buffered until replay is safe.
+		const runAttempt = async (apiKey?: string): Promise<AuthRetryFailure | undefined> => {
 			const bufferedEvents: AssistantMessageEvent[] = [];
 			let emittedReplayUnsafeEvent = false;
 			const flushBuffered = (): void => {
@@ -1107,6 +1109,11 @@ export function streamSimple<TApi extends Api>(
 				return;
 			}
 			if (lastKey === undefined) {
+				if (getProviderDefinition(model.provider)?.allowsMissingApiKey) {
+					const failure = await runAttempt();
+					if (failure) emitFailure(failure);
+					return;
+				}
 				outer.fail(new AIError.MissingApiKeyError(model.provider));
 				return;
 			}
@@ -1155,6 +1162,13 @@ export function streamSimple<TApi extends Api>(
 	} else if (model.api === "bedrock-converse-stream") {
 		// Bedrock doesn't have any API keys instead it sources credentials from standard AWS env variables or from given AWS profile.
 		const providerOptions = mapOptionsForApi(model, requestOptions, undefined);
+		return stream(model, context, providerOptions);
+	} else if (getProviderDefinition(model.provider)?.allowsMissingApiKey) {
+		const providerOptions = mapOptionsForApi(
+			model,
+			requestOptions,
+			typeof requestOptions.apiKey === "string" ? requestOptions.apiKey : getEnvApiKey(model.provider),
+		);
 		return stream(model, context, providerOptions);
 	}
 
@@ -1454,6 +1468,7 @@ function mapOptionsForApi<TApi extends Api>(
 	apiKey?: string,
 ): OptionsForApi<TApi> {
 	const options = normalizeMandatoryReasoningOptions(model, rawOptions);
+	const simpleProviderOptions = getProviderDefinition(model.provider)?.mapSimpleOptions?.(options ?? {});
 	const base = {
 		temperature: options?.temperature,
 		topP: options?.topP,
@@ -1483,6 +1498,7 @@ function mapOptionsForApi<TApi extends Api>(
 		execHandlers: options?.execHandlers,
 		fetch: options?.fetch,
 		fallbacks: options?.fallbacks,
+		...simpleProviderOptions,
 	};
 
 	switch (model.api) {

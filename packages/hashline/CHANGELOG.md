@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [17.2.2] - 2026-07-31
+
+### Breaking Changes
+
+- Replaced legacy SWAP, INS, and PASTE syntax with unified PUT and CUT hunks
+
+### Added
+
+- Added named register support (@reg) and span paste capabilities to clipboard operations
+- Added conservative recovery for uniformly omitted replacement indents near brace openers, preserving intentional indentation-only edits
+
+### Changed
+
+- Made .= the canonical inclusive range separator while retaining legacy separator variants as lenient input
+- Unified replacement, insertion, register paste, block, head/tail, move, and removal headers under a composable PUT, CUT, MV, and REM grammar
+
+### Fixed
+
+- Improved resilience against common model output formatting errors, including numbered read rows, summarized ranges, diff-style old/new rows, empty PUT deletes, harmless CUT colons, and single-line span shorthand
+
 ## [17.2.0] - 2026-07-30
 
 ### Breaking Changes

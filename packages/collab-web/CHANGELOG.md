@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [17.2.2] - 2026-07-31
+
+### Fixed
+
+- Fixed an issue where the guest UI could incorrectly appear idle (such as the loading spinner disappearing) while the host agent was still running after a reconnection, and ensured tool cards are properly cleared if a connection drop occurs.
+
 ## [17.2.0] - 2026-07-30
 
 ### Fixed

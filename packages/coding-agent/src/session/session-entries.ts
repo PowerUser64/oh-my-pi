@@ -39,6 +39,8 @@ export interface SessionHeader {
 	 */
 	additionalDirectories?: string[];
 	parentSession?: string;
+	/** Prior absolute JSONL locations recorded by successful session moves. */
+	previousSessionFiles?: string[];
 	/** Provider prompt-cache identity inherited by exact-route full forks. */
 	providerPromptCacheKey?: string;
 }
@@ -120,6 +122,18 @@ export interface BranchSummaryEntry<T = unknown> extends SessionEntryBase {
 }
 
 /**
+ * Pure marker entry recorded by `/clear` (resetSessionContext). It carries no
+ * payload — its presence on the branch is a durable boundary the collapsed
+ * live transcript and the model-context rebuild start emission after, so a
+ * rebuild (theme change, focus attach, /shake, resume) does not resurrect the
+ * pre-reset conversation. The on-disk record and the plain `transcript:true`
+ * export path keep the full pre-reset history.
+ */
+export interface ResetBoundaryEntry extends SessionEntryBase {
+	type: "reset_boundary";
+}
+
+/**
  * Custom entry for extensions to store extension-specific data in the session.
  * Use customType to identify your extension's entries.
  *
@@ -155,6 +169,7 @@ declare module "@oh-my-pi/pi-agent-core/compaction/entries" {
 	interface CustomCompactionSessionEntries {
 		titleChange: TitleChangeEntry;
 		credentialPin: CredentialPinEntry;
+		resetBoundary: ResetBoundaryEntry;
 	}
 }
 
@@ -250,7 +265,8 @@ export type SessionEntry =
 	| TtsrInjectionEntry
 	| SessionInitEntry
 	| ModeChangeEntry
-	| CredentialPinEntry;
+	| CredentialPinEntry
+	| ResetBoundaryEntry;
 
 /** Raw logical file entry after loaders strip any fixed-width title slot. */
 export type FileEntry = SessionHeader | SessionEntry;

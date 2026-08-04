@@ -4,6 +4,8 @@ import { Text } from "./text";
 
 const RENDER_INTERVAL_MS = 1000 / 30;
 const SPINNER_ADVANCE_MS = 80;
+const MAX_RENDER_BACKPRESSURE_MS = 200;
+const RENDER_BACKPRESSURE_MULTIPLIER = 9;
 
 type ColorFn = (str: string) => string;
 
@@ -98,25 +100,12 @@ export class Loader extends Text {
 		this.#syncText();
 		this.#requestPaint();
 		const intervalMs = this.messageColorFn.animated === true ? RENDER_INTERVAL_MS : SPINNER_ADVANCE_MS;
-		this.#intervalId = setInterval(() => {
-			const now = performance.now();
-			const elapsed = now - this.#lastSpinnerTick;
-			const shouldAdvanceSpinner = elapsed >= SPINNER_ADVANCE_MS;
-			if (shouldAdvanceSpinner) {
-				const steps = Math.floor(elapsed / SPINNER_ADVANCE_MS);
-				this.#currentFrame = (this.#currentFrame + steps) % this.#frames.length;
-				this.#lastSpinnerTick += steps * SPINNER_ADVANCE_MS;
-				this.#syncText();
-			}
-			if (shouldAdvanceSpinner || this.#ui?.synchronizedOutput === true) {
-				this.#requestPaint();
-			}
-		}, intervalMs);
+		this.#scheduleTick(intervalMs, intervalMs);
 	}
 
 	stop() {
 		if (this.#intervalId) {
-			clearInterval(this.#intervalId);
+			clearTimeout(this.#intervalId);
 			this.#intervalId = undefined;
 		}
 	}
@@ -135,6 +124,32 @@ export class Loader extends Text {
 		this.#requestPaint();
 	}
 
+	#scheduleTick(intervalMs: number, delayMs: number): void {
+		const timer = setTimeout(() => {
+			if (this.#intervalId !== timer) return;
+			const startedAt = performance.now();
+			const elapsed = startedAt - this.#lastSpinnerTick;
+			const shouldAdvanceSpinner = elapsed >= SPINNER_ADVANCE_MS;
+			if (shouldAdvanceSpinner) {
+				const steps = Math.floor(elapsed / SPINNER_ADVANCE_MS);
+				this.#currentFrame = (this.#currentFrame + steps) % this.#frames.length;
+				this.#lastSpinnerTick += steps * SPINNER_ADVANCE_MS;
+				this.#syncText();
+			}
+			if (shouldAdvanceSpinner || this.#ui?.synchronizedOutput === true) {
+				this.#requestPaint();
+			}
+
+			const frameCostMs = performance.now() - startedAt;
+			if (this.#intervalId !== timer) return;
+			const cadenceDelayMs = Math.max(0, intervalMs - frameCostMs);
+			// Idle for nine times the paint cost to keep animation at or below
+			// 10% CPU, while cheap frames retain their original cadence.
+			const backpressureDelayMs = Math.min(MAX_RENDER_BACKPRESSURE_MS, frameCostMs * RENDER_BACKPRESSURE_MULTIPLIER);
+			this.#scheduleTick(intervalMs, Math.max(cadenceDelayMs, backpressureDelayMs));
+		}, delayMs);
+		this.#intervalId = timer;
+	}
 	/** Re-wrap the underlying Text only when its message or frame width changes. */
 	#syncText(): boolean {
 		const layoutFrame = this.#layoutFrames[this.#currentFrame];

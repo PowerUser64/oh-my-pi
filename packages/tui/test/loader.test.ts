@@ -134,6 +134,33 @@ describe("Loader component", () => {
 		loader.stop();
 	});
 
+	it("backs off animated paints when direct writes consume the frame budget", () => {
+		vi.useFakeTimers();
+		let now = 0;
+		const ui = {
+			synchronizedOutput: true,
+			requestDirectWrite: vi.fn(() => {
+				now += 20;
+			}),
+			requestComponentRender: vi.fn(),
+		};
+		const colorMessage = ((text: string) => text) as LoaderMessageColorFn & { animated: true };
+		colorMessage.animated = true;
+		spyOn(performance, "now").mockImplementation(() => now);
+		const loader = new Loader(ui as unknown as TUI, text => text, colorMessage, "Checking", ["0"]);
+
+		expect(ui.requestDirectWrite).toHaveBeenCalledTimes(1);
+		vi.advanceTimersByTime(34);
+		expect(ui.requestDirectWrite).toHaveBeenCalledTimes(2);
+
+		vi.advanceTimersByTime(170);
+		expect(ui.requestDirectWrite).toHaveBeenCalledTimes(2);
+		vi.advanceTimersByTime(10);
+		expect(ui.requestDirectWrite).toHaveBeenCalledTimes(3);
+
+		loader.stop();
+	});
+
 	it("reuses text layout when only animated ANSI styling changes", () => {
 		vi.useFakeTimers();
 		let colorFrame = 0;

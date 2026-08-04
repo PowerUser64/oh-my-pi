@@ -27,6 +27,7 @@ import { type FirstResultViewportRepaint, toolRenderers } from "../../tools/rend
 import { TODO_STRIKE_TOTAL_FRAMES, type TodoToolDetails } from "../../tools/todo";
 import type { XdevState } from "../../tools/xdev";
 import { isFramedBlockComponent, markFramedBlockComponent, renderStatusLine, WidthAwareText } from "../../tui";
+import { convertImageToPng } from "../../utils/image-loading";
 import { sanitizeWithOptionalSixelPassthrough } from "../../utils/sixel";
 import { renderDiff } from "./diff";
 
@@ -245,6 +246,7 @@ export interface ToolExecutionHandle extends Component {
 	): void;
 	setArgsComplete(toolCallId?: string): void;
 	setExpanded(expanded: boolean): void;
+	setToolActivityVisible(visible: boolean): void;
 	/** Freeze the block as final history: stop spinners and let it commit to scrollback. */
 	seal(): void;
 }
@@ -275,6 +277,9 @@ let toolExecutionInstanceSeq = 0;
 export class ToolExecutionComponent extends Container implements NativeScrollbackLiveRegion {
 	#contentBox: Box; // Used for custom tools and bash visual truncation
 	#contentText: WidthAwareText; // Generic fallback (no custom/built-in renderer)
+	// Which container the constructor mounted: bespoke/built-in renderers use
+	// #contentBox, everything else the generic #contentText fallback.
+	#usesContentBox = false;
 	#multiFileBoxes: (Box | Spacer)[] = []; // Extra boxes for multi-file edit results
 	#imageComponents: Image[] = [];
 	#imageSpacers: Spacer[] = [];
@@ -283,6 +288,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	#toolLabel: string;
 	#args: any;
 	#expanded = false;
+	#toolActivityVisible = true;
 	#showImages: boolean;
 	#editFuzzyThreshold: number | undefined;
 	#editAllowFuzzy: boolean | undefined;
@@ -410,26 +416,13 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		// strips PLAIN-blank edges, so framed/minimal blocks (no bg set) drop these
 		// lines and keep their tight spacing — only tinted lines survive.
 		this.#contentBox = new Box(0, 1);
-		this.#contentText = new WidthAwareText(
-			contentWidth =>
-				formatDefaultToolExecution(
-					{
-						label: this.#toolLabel,
-						args: this.#args,
-						result: this.#result ? { output: this.#getTextOutput(), isError: this.#result.isError } : undefined,
-						options: this.#renderState,
-					},
-					contentWidth,
-					theme,
-				),
-			1,
-			1,
-		);
+		this.#contentText = new WidthAwareText(contentWidth => this.#renderDefaultCard(contentWidth), 1, 1);
 
 		// Use Box for custom tools or built-in tools that have renderers
 		const hasRenderer = toolName in toolRenderers;
 		const hasCustomRenderer = !!(tool?.renderCall || tool?.renderResult);
-		if (hasCustomRenderer || hasRenderer) {
+		this.#usesContentBox = hasCustomRenderer || hasRenderer;
+		if (this.#usesContentBox) {
 			this.addChild(this.#contentBox);
 		} else {
 			this.addChild(this.#contentText);
@@ -651,11 +644,9 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 
 			// Convert async - catch errors from processing
 			const index = i;
-			new Bun.Image(Buffer.from(img.data, "base64"))
-				.png()
-				.toBase64()
-				.then(data => {
-					this.#convertedImages.set(index, { data, mimeType: "image/png" });
+			convertImageToPng({ type: "image", data: img.data, mimeType: img.mimeType })
+				.then(converted => {
+					this.#convertedImages.set(index, converted);
 					this.#displayInputVersion++;
 					this.#updateDisplay();
 					this.#ui.requestRender();
@@ -912,6 +903,11 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#updateDisplay();
 	}
 
+	setToolActivityVisible(visible: boolean): void {
+		this.#toolActivityVisible = visible;
+		super.invalidate();
+	}
+
 	setShowImages(show: boolean): void {
 		this.#showImages = show;
 		this.#updateDisplay();
@@ -971,6 +967,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	}
 
 	override render(width: number): readonly string[] {
+		if (!this.#toolActivityVisible) return [];
 		const lines = super.render(width);
 		// Update the paint-tracking flags after `super.render(width)` — the
 		// override runs on every compose the parent Container performs, so a
@@ -999,12 +996,21 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 
 		// Non-self-framing tools (custom/extension renderers and the generic
 		// fallback) get a padded, state-tinted block — built-ins that draw their
-		// own frame opt out below via the framed-component mark.
-		const stateBgKey = this.#isPartial ? "toolPendingBg" : this.#result?.isError ? "toolErrorBg" : "toolSuccessBg";
+		// own frame opt out below via the framed-component mark. A benign skip
+		// (steering/peer interrupt aborted a still-pending call) never ran, so it
+		// gets the neutral pending tint rather than the error tint (#7199).
+		const benignSkip = this.#isBenignSkip();
+		const stateBgKey =
+			this.#isPartial || benignSkip ? "toolPendingBg" : this.#result?.isError ? "toolErrorBg" : "toolSuccessBg";
 		const stateBgFn = (t: string) => theme.bg(stateBgKey, t);
 
-		// Check for custom tool rendering
-		if (this.#tool && (this.#tool.renderCall || this.#tool.renderResult)) {
+		// A benign skip is a synthetic placeholder for a call that never executed,
+		// so bypass any bespoke error frame and draw the neutral generic card —
+		// the per-tool ✘/red-border would misread normal mid-turn steering as a
+		// failure (#7199).
+		if (benignSkip) {
+			this.#renderBenignSkipCard(stateBgFn);
+		} else if (this.#tool && (this.#tool.renderCall || this.#tool.renderResult)) {
 			const tool = this.#tool;
 			const mergeCallAndResult = Boolean((tool as { mergeCallAndResult?: boolean }).mergeCallAndResult);
 			// Custom tools use Box for flexible component rendering
@@ -1399,5 +1405,63 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		}
 
 		return output;
+	}
+
+	/**
+	 * Format the generic call/result card at `contentWidth`. Shared by the
+	 * #contentText fallback and the benign-skip path so both render identically.
+	 */
+	#renderDefaultCard(contentWidth: number): string {
+		return formatDefaultToolExecution(
+			{
+				label: this.#toolLabel,
+				args: this.#args,
+				result: this.#result
+					? { output: this.#getTextOutput(), isError: this.#result.isError, skipped: this.#isBenignSkip() }
+					: undefined,
+				options: this.#renderState,
+			},
+			contentWidth,
+			theme,
+		);
+	}
+
+	/**
+	 * True for a steering/peer-interrupt placeholder. A synthetic placeholder
+	 * identifies a call that never entered `tool.execute`; an interrupted
+	 * placeholder identifies one that started but threw before returning usable
+	 * output. Both are normal steering control flow and render neutrally (#7199).
+	 */
+	#isBenignSkip(): boolean {
+		if (this.#isPartial || !this.#result) return false;
+		const details = this.#result.details as
+			| { __synthetic?: boolean; __interrupted?: boolean; source?: string; execution?: string }
+			| undefined;
+		if (details?.source !== "interrupt_skipped") return false;
+		return details.__synthetic === true || (details.__interrupted === true && details.execution === "started");
+	}
+
+	/**
+	 * Render a benign skip as the neutral generic card, replacing any bespoke
+	 * renderer's error frame. Generic-fallback tools already route through
+	 * {@link #renderDefaultCard} (which emits the info card for a skip); they
+	 * only need the neutral tint. Bespoke-renderer tools get their content box
+	 * swapped for the same neutral card.
+	 */
+	#renderBenignSkipCard(stateBgFn: (text: string) => string): void {
+		if (!this.#usesContentBox) {
+			this.#contentText.setCustomBgFn(stateBgFn);
+			this.#contentText.invalidate();
+			return;
+		}
+		for (const box of this.#multiFileBoxes) {
+			this.removeChild(box);
+		}
+		this.#multiFileBoxes = [];
+		this.#contentBox.setBgFn(undefined);
+		this.#contentBox.clear();
+		this.#contentBox.setPaddingX(1);
+		this.#contentBox.setBgFn(stateBgFn);
+		this.#contentBox.addChild(new WidthAwareText(contentWidth => this.#renderDefaultCard(contentWidth), 0, 0));
 	}
 }

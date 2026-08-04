@@ -20,6 +20,14 @@ import { JsRuntime, type RuntimeHooks } from "../../eval/js/shared/runtime";
 import { resizeImage } from "../../utils/image-resize";
 import { resolveToCwd } from "../path-utils";
 import { formatScreenshot } from "../render-utils";
+import {
+	bindRunFacade,
+	CELL_BUDGET_SLACK_MS,
+	markHandled,
+	resolvePredicateTimeout,
+	type WaitPredicateOptions,
+	waitForRun,
+} from "../run-scope";
 import { ToolAbortError, ToolError, throwIfAborted } from "../tool-errors";
 import {
 	type AriaSnapshotOptions,
@@ -36,14 +44,6 @@ import {
 	loadPuppeteerInWorker,
 } from "./launch";
 import { extractReadableFromHtml, type ReadableFormat } from "./readable";
-import {
-	bindBrowserRunFacade,
-	CELL_BUDGET_SLACK_MS,
-	markHandled,
-	resolvePredicateTimeout,
-	type WaitPredicateOptions,
-	waitForBrowserRun,
-} from "./run-cancellation";
 import { cloneSafe, RunOutput } from "./run-output";
 import type {
 	Observation,
@@ -72,6 +72,7 @@ declare global {
 	var innerHeight: number;
 	var document: {
 		elementFromPoint(x: number, y: number): Element | null;
+		readonly visibilityState: "visible" | "hidden";
 	};
 }
 
@@ -711,6 +712,22 @@ export function describeScreenshot(opts?: ScreenshotOptions): string {
 	if (opts?.fullPage) return "tab.screenshot({ fullPage: true })";
 	return "tab.screenshot()";
 }
+export async function preparePageForScreenshot(
+	page: Pick<Page, "bringToFront" | "evaluate">,
+	signal: AbortSignal | undefined,
+	activate: boolean,
+): Promise<void> {
+	if (activate) {
+		await untilAborted(signal, () => page.bringToFront()).catch(() => undefined);
+		return;
+	}
+	const visible = await untilAborted(signal, () => page.evaluate(() => document.visibilityState === "visible")).catch(
+		() => false,
+	);
+	if (!visible) {
+		throw new ToolError("The attached browser tab is not visible; switch to it before taking a screenshot");
+	}
+}
 
 /** Summarize still-running helpers (oldest first) so a cell timeout names what stalled. */
 export function describeInflight(inflight: Map<number, InflightOp>): string {
@@ -732,6 +749,7 @@ export class WorkerCore {
 	#runtime: JsRuntime | null = null;
 	#unsub: () => void;
 	#mode?: WorkerInitPayload["mode"];
+	#activateForScreenshot = true;
 	#dialogPolicy?: DialogPolicy;
 	#dialogHandler?: (dialog: Dialog) => void;
 	#openDialog?: OpenDialogInfo;
@@ -780,6 +798,7 @@ export class WorkerCore {
 	async #init(payload: WorkerInitPayload): Promise<void> {
 		try {
 			this.#mode = payload.mode;
+			this.#activateForScreenshot = payload.mode === "headless" || payload.activateForScreenshot !== false;
 			const puppeteer = await loadPuppeteerInWorker(payload.safeDir);
 			this.#browser = await puppeteer.connect({
 				browserWSEndpoint: payload.browserWSEndpoint,
@@ -808,8 +827,16 @@ export class WorkerCore {
 				const page = await target.page();
 				if (!page) throw new ToolError(`Target ${payload.targetId} is no longer available on the attached browser`);
 				this.#page = page;
+				await this.#claimRelayTarget(page);
 				this.#observeDialogs();
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
+				if (payload.url) {
+					await this.#page.goto(payload.url, {
+						// Same default as the headless arm: dev servers with HMR/WS never reach networkidle.
+						waitUntil: payload.waitUntil ?? "load",
+						timeout: payload.timeoutMs,
+					});
+				}
 			}
 			this.#targetId = await targetIdForPage(this.#page);
 			this.#transport.send({ type: "ready", info: await this.#currentReadyInfo() });
@@ -825,6 +852,26 @@ export class WorkerCore {
 			return target;
 		}
 		throw new ToolError(`Target ${targetId} is no longer available on the attached browser`);
+	}
+
+	/**
+	 * Tell the omp browser relay this worker drives the adopted page, so the
+	 * relay adds it to the per-window "omp" tab group. Best-effort: plain CDP
+	 * backends (real Chrome, cmux) reject the relay-private method.
+	 */
+	async #claimRelayTarget(page: Page): Promise<void> {
+		let session: CDPSession | undefined;
+		try {
+			session = await page.createCDPSession();
+			// Puppeteer's protocol map cannot express the relay-private method; the
+			// send signature is otherwise identical.
+			const raw = session as unknown as { send(method: string): Promise<unknown> };
+			await raw.send("OMP.claimTarget");
+		} catch {
+			// Not the omp relay; nothing to claim.
+		} finally {
+			await session?.detach().catch(() => undefined);
+		}
 	}
 
 	/**
@@ -949,9 +996,9 @@ export class WorkerCore {
 			const runtime = this.#ensureRuntime(msg.session);
 			runtime.setCwd(msg.session.cwd);
 			runtime.setRunScope({
-				page: bindBrowserRunFacade(runPage.page, signal),
-				browser: bindBrowserRunFacade(browser, signal),
-				tab: bindBrowserRunFacade(tabApi, signal),
+				page: bindRunFacade(runPage.page, signal),
+				browser: bindRunFacade(browser, signal),
+				tab: bindRunFacade(tabApi, signal),
 				assert: (cond: unknown, text?: string): void => {
 					if (!cond) throw new ToolError(text ?? "Assertion failed");
 				},
@@ -965,7 +1012,7 @@ export class WorkerCore {
 							: { timeout: resolvePredicateTimeout(msg.timeoutMs, opts?.timeout), interval: opts?.interval };
 					return markHandled(
 						this.#runOp(active, label, signal, Number.POSITIVE_INFINITY, sig =>
-							waitForBrowserRun(msOrPredicate, sig, resolved),
+							waitForRun(msOrPredicate, sig, resolved),
 						),
 					);
 				},
@@ -1521,11 +1568,15 @@ export class WorkerCore {
 		const page = this.#requirePage();
 		// Multiple tabs can share one Chromium (sibling headless tabs on a shared
 		// endpoint, cdp/app attach). CDP `Page.captureScreenshot` reads the
-		// compositor surface, which follows the *active* target — a backgrounded
+		// compositor surface, which follows the *active* target: a backgrounded
 		// page can stall waiting for a fresh frame (the 20s screenshot timeouts)
 		// or hand back a sibling tab's pixels. Activate first; best-effort so an
 		// already-active or freshly-closed target never fails the capture.
-		await untilAborted(signal, () => page.bringToFront()).catch(() => undefined);
+		//
+		// For a user-driven browser, redundant activation would steal window focus.
+		// The supervisor disables it only after adopting the visible tab; if the user
+		// later switches away, reject capture rather than risk sibling-tab pixels.
+		await preparePageForScreenshot(page, signal, this.#activateForScreenshot);
 		const fullPage = opts.selector ? false : (opts.fullPage ?? false);
 		const captureType = "png";
 		const captureMime = "image/png" as const;

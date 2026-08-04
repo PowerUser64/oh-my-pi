@@ -23,7 +23,7 @@
  *    immediately instead of blocking to the run's timeout.
  * 2. When the in-flight run is doing work that does NOT make another cmux
  *    socket request (e.g. `await wait(60_000)`), releasing the tab still
- *    unwinds the run — proving `closeAc.signal` reaches `waitForBrowserRun`
+ *    unwinds the run — proving `closeAc.signal` reaches `waitForRun`
  *    and the facade proxies, not just the outer race. (Reviewer feedback
  *    from PR #4502.)
  */
@@ -218,7 +218,7 @@ describe("browser tab-supervisor — cmux tab close mid-run (#4499)", () => {
 
 			const session = makeSession("/tmp");
 			// The user code awaits `wait(60_000)` — which drives
-			// `waitForBrowserRun(60_000, signal)` -> `untilAborted(signal,
+			// `waitForRun(60_000, signal)` -> `untilAborted(signal,
 			// () => Bun.sleep(60_000))` INSIDE the runtime. Nothing hits the
 			// cmux socket, so on `main` the reviewer's exact scenario applies:
 			// even after `pending.reject` unblocks the caller, `runCmuxCode`
@@ -251,7 +251,7 @@ describe("browser tab-supervisor — cmux tab close mid-run (#4499)", () => {
 			// the map. This is the wire the reviewer asked us to check: the
 			// tab-close event must reach the cmux run body, not only the
 			// awaiting caller. Its `.signal.aborted` is the observable proof
-			// that `waitForBrowserRun` / cmux socket calls will unwind
+			// that `waitForRun` / cmux socket calls will unwind
 			// synchronously (via `untilAborted`) instead of blocking to the
 			// 60_000ms timeout.
 			const pendingBeforeRelease = [...(tabBeforeRelease?.pending.values() ?? [])];

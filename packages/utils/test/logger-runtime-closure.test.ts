@@ -67,7 +67,7 @@ describe("central logger runtime closure", () => {
 		const { winston } = await runPositiveControl();
 		expect(winston.modules, JSON.stringify(winston)).toBeGreaterThan(0);
 		expect(winston.bytes, JSON.stringify(winston)).toBeGreaterThan(0);
-	});
+	}, 30_000);
 
 	for (const scenario of ["import", "console", "file"] as const) {
 		test(`${scenario} evaluates zero Winston runtime modules`, async () => {
@@ -76,9 +76,12 @@ describe("central logger runtime closure", () => {
 				{ modules: snapshot.winston.modules, bytes: snapshot.winston.bytes },
 				JSON.stringify(snapshot.winston),
 			).toEqual({ modules: 0, bytes: 0 });
-		});
+		}, 30_000);
 	}
 
+	// Cold-cache probe children measure well under a second locally, but bun's
+	// 5 s default test timeout SIGTERMed a probe (exit 143) on shared-core CI
+	// runners; mirror logger-contract's 30 s ceiling for subprocess tests.
 	test("rotation engine stays lazy until a file transport is constructed", async () => {
 		const imported = await runProbe("import");
 		const consoled = await runProbe("console");
@@ -96,7 +99,7 @@ describe("central logger runtime closure", () => {
 		expect(filed.snapshot.moment.modules, JSON.stringify(filed.snapshot)).toBeGreaterThan(0);
 		expect(filed.stdout).toBe("");
 		expect(filed.stderr).toBe("");
-	});
+	}, 30_000);
 	test("pins the deep rotation entrypoint to the reviewed package layout", async () => {
 		const rootPackage = JSON.parse(
 			await fs.readFile(path.resolve(import.meta.dir, "../../..", "package.json"), "utf8"),
