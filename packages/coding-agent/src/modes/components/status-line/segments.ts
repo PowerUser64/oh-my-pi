@@ -117,9 +117,10 @@ const modelSegment: StatusLineSegment = {
 					: `${theme.thinking.autoPending} auto`;
 			} else {
 				const level = state.thinkingLevel ?? ThinkingLevel.Off;
-				if (level !== ThinkingLevel.Off) {
-					thinkingDisplay = theme.thinking[level as keyof typeof theme.thinking] ?? "";
-				}
+				thinkingDisplay =
+					level === ThinkingLevel.Off
+						? `${theme.status.disabled} off`
+						: (theme.thinking[level as keyof typeof theme.thinking] ?? level);
 			}
 		}
 

@@ -717,10 +717,17 @@ export class ProcessTerminal implements Terminal {
 		// stderr-guard in pi-utils (mirrors openai/codex#24459).
 		suppressTerminalStderr();
 
-		// Save previous state and enable raw mode
+		// A multiplexer or SSH disconnect can leave isTTY true after its pty has
+		// been revoked. Raw mode is then impossible, so take the normal terminal
+		// disconnect path rather than letting Bun abort startup with EIO.
 		this.#wasRaw = process.stdin.isRaw || false;
 		if (process.stdin.setRawMode) {
-			process.stdin.setRawMode(true);
+			try {
+				process.stdin.setRawMode(true);
+			} catch (err) {
+				this.#markTerminalDisconnected("stdin raw mode setup failed", err);
+				return;
+			}
 		}
 		process.stdin.setEncoding("utf8");
 		process.stdin.on("end", this.#stdinEndHandler);
@@ -1100,7 +1107,13 @@ export class ProcessTerminal implements Terminal {
 				const reportedFlags = parseInt(match[1]!, 10);
 				this.#kittyProtocolActive = true;
 				setKittyProtocolActive(true);
-				if ((reportedFlags & 2) !== 0) {
+				if (isConPTYHosted()) {
+					// ConPTY (native Windows and WSL) drops Shift+letter keypresses
+					// entirely when flag 4 (report alternate keys) is set. Use flag 1
+					// (disambiguate only), preserving flag 2 if already active.
+					this.#kittyEnableSeq = (reportedFlags & 2) !== 0 ? "\x1b[>3u" : "\x1b[>1u";
+					this.#safeWrite(this.#kittyEnableSeq);
+				} else if ((reportedFlags & 2) !== 0) {
 					// Preserve event-type reporting already enabled by a parent app.
 					// Push level-2 to keep its shortcuts reporting consistently.
 					this.#kittyEnableSeq = "\x1b[>7u";

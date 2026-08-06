@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [17.2.10] - 2026-08-06
+
+### Fixed
+
+- Fixed a startup crash (EIO error) in multiplexer or SSH sessions when a revoked pty leaves stdin.isTTY active.
+- Fixed prompt autocomplete to support Windows drive-absolute paths (e.g., C:/ or C:\).
+- Fixed desktop notifications in systemd, tmux, or SSH-attached Linux sessions when DBUS_SESSION_BUS_ADDRESS is unset.
+- Fixed an issue where Shift+letter and shifted symbol inputs (such as capital letters, ?, and !) were silently dropped on Windows and WSL terminals using ConPTY (e.g., WezTerm).
+
 ## [17.2.9] - 2026-08-05
 
 ### Fixed

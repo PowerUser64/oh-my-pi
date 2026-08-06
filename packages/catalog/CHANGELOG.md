@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [17.2.10] - 2026-08-06
+
+### Changed
+
+- Removed the zod dependency by migrating GitLab Duo Workflow discovery schemas to omptype.
+
+### Fixed
+
+- Corrected thinking-effort tiers for deepseek-v4-flash to include the low tier alongside high and max.
+
 ## [17.2.9] - 2026-08-05
 
 ### Fixed

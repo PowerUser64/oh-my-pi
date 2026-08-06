@@ -756,6 +756,14 @@ jobs:
          # is needed on this runner.
          - name: Build browser relay artifacts
            run: bun run --cwd packages/browser-relay build
+         # Generated after every other release asset is in place and before
+         # the release is created, so SHA256SUMS.txt itself ships as an asset
+         # and covers every other file uploaded alongside it.
+         - name: Generate checksums
+           run: |
+              bun run ci:release:checksums SHA256SUMS.txt \
+                packages/coding-agent/binaries/omp-* \
+                packages/browser-relay/dist/omp-browser-relay-extension.zip
          - name: Create GitHub Release
            uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
            with:
@@ -763,6 +771,7 @@ jobs:
               files: |
                  packages/coding-agent/binaries/omp-*
                  packages/browser-relay/dist/omp-browser-relay-extension.zip
+                 SHA256SUMS.txt
               body_path: release-notes.md
               generate_release_notes: true
 

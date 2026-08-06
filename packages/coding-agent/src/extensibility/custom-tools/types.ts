@@ -70,7 +70,7 @@ export interface CustomToolAPI {
 	typebox: typeof TypeBox;
 	/** Injected arktype module for arktype-authored custom tools. */
 	arktype: typeof ArkType;
-	/** Injected omptype-backed zod facade for parameter schemas. */
+	/** Injected Zod-compatible omptype builder for custom tools. */
 	zod: typeof zod;
 	/** Injected pi-coding-agent exports */
 	pi: typeof PiCodingAgent;

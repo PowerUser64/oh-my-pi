@@ -7,7 +7,7 @@ import { formatModelString } from "../config/model-resolver";
 import type { Settings, SkillsSettings } from "../config/settings";
 import type { CustomTool, CustomToolContext } from "../extensibility/custom-tools/types";
 import { CustomToolAdapter } from "../extensibility/custom-tools/wrapper";
-import type { ExtensionRunner } from "../extensibility/extensions";
+import type { ExtensionRunner, SourceInfo, ToolInfo } from "../extensibility/extensions";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "../extensibility/skills";
 import { type LocalProtocolOptions, XD_URL_PREFIX } from "../internal-urls";
@@ -331,6 +331,33 @@ export class SessionTools {
 	/** Names of every registered tool. */
 	getAllToolNames(): string[] {
 		return Array.from(this.#toolRegistry.keys());
+	}
+
+	/**
+	 * Full metadata for every registered tool, including source provenance.
+	 *
+	 * Backs the `getAllTools()` ExtensionAPI method. Returns {@link ToolInfo}
+	 * objects (not bare names) so extensions authored against upstream
+	 * `@earendil-works/pi-coding-agent` — which promises `ToolInfo[]` — can read
+	 * `sourceInfo.source` unchanged.
+	 */
+	getAllToolInfos(): ToolInfo[] {
+		return Array.from(this.#toolRegistry, ([name, tool]) => {
+			const source = this.#builtInToolNames.has(name)
+				? "builtin"
+				: isMCPToolName(name)
+					? "mcp"
+					: this.#rpcHostToolNames.has(name)
+						? "sdk"
+						: "extension";
+			const sourceInfo: SourceInfo = {
+				path: `<${source}:${name}>`,
+				source,
+				scope: "temporary",
+				origin: "top-level",
+			};
+			return { name, description: tool.description, parameters: tool.parameters, sourceInfo };
+		});
 	}
 
 	#wrapRuntimeTool(tool: AgentTool): AgentTool {

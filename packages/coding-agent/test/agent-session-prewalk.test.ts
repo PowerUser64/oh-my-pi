@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import { type Api, Effort, type Model, z } from "@oh-my-pi/pi-ai";
+import { type Api, Effort, type Model } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -45,7 +46,7 @@ describe("AgentSession prewalk", () => {
 		return model;
 	}
 
-	const recordToolSchema = z.object({});
+	const recordToolSchema = type({});
 	const recordTool: AgentTool<typeof recordToolSchema, undefined> = {
 		name: "record",
 		label: "Record",
@@ -55,7 +56,7 @@ describe("AgentSession prewalk", () => {
 			return { content: [{ type: "text", text: "ok" }], details: undefined };
 		},
 	};
-	const bashToolSchema = z.object({});
+	const bashToolSchema = type({});
 	const bashTool: AgentTool<typeof bashToolSchema, undefined> = {
 		name: "bash",
 		label: "Bash",
@@ -65,7 +66,7 @@ describe("AgentSession prewalk", () => {
 			return { content: [{ type: "text", text: "ran" }], details: undefined };
 		},
 	};
-	const writeToolSchema = z.object({});
+	const writeToolSchema = type({});
 	const writeTool: AgentTool<typeof writeToolSchema, undefined> = {
 		name: "write",
 		label: "Write",
@@ -75,7 +76,7 @@ describe("AgentSession prewalk", () => {
 			return { content: [{ type: "text", text: "wrote" }], details: undefined };
 		},
 	};
-	const todoToolSchema = z.object({});
+	const todoToolSchema = type({});
 	const todoTool: AgentTool<typeof todoToolSchema, undefined> = {
 		name: "todo",
 		label: "Todo",

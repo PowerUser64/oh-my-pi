@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [17.2.10] - 2026-08-06
+
+### Changed
+
+- Updated internal LRU cache implementation.
+
 ## [17.2.6] - 2026-08-03
 
 ### Added

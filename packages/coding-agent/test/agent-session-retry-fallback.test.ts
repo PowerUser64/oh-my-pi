@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
+import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import {
 	type AssistantMessage,
@@ -8,7 +9,6 @@ import {
 	type Model,
 	type ModelUsageHealth,
 	type ProviderSessionState,
-	z,
 } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -978,7 +978,7 @@ describe("AgentSession retry fallback", () => {
 		if (!primaryModel) throw new Error("Expected bundled tool-continuation model");
 		const requestedModels: string[] = [];
 		let useReserve = false;
-		const toolSchema = z.object({ value: z.string() });
+		const toolSchema = type({ value: type("string") });
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
 			name: "consume",
 			label: "Consume",

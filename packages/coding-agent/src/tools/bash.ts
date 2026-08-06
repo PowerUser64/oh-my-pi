@@ -384,8 +384,8 @@ function normalizeBashEnv(env: Record<string, string> | undefined): Record<strin
 	return normalized;
 }
 
-function escapeBashEnvValueForDisplay(value: string): string {
-	return value
+function escapeBashEnvValueForDisplay(value: unknown): string {
+	return String(value)
 		.replaceAll("\\", "\\\\")
 		.replaceAll("\n", "\\n")
 		.replaceAll("\r", "\\r")
@@ -395,7 +395,7 @@ function escapeBashEnvValueForDisplay(value: string): string {
 		.replaceAll("`", "\\`");
 }
 
-function formatBashEnvAssignments(env: Record<string, string> | undefined): string {
+function formatBashEnvAssignments(env: Record<string, unknown> | undefined): string {
 	if (!env || Object.keys(env).length === 0) return "";
 	return Object.entries(env)
 		.sort(([a], [b]) => a.localeCompare(b))
@@ -1498,7 +1498,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 // =============================================================================
 export interface BashRenderArgs {
 	command?: string;
-	env?: Record<string, string>;
+	env?: Record<string, unknown>;
 	timeout?: number;
 	cwd?: string;
 	__partialJson?: string;
@@ -1522,7 +1522,7 @@ export interface ShellRendererConfig<TArgs> {
 	resolveTitle: (args: TArgs | undefined, options: RenderResultOptions) => string;
 	resolveCommand?: (args: TArgs | undefined) => string | undefined;
 	resolveCwd?: (args: TArgs | undefined) => string | undefined;
-	resolveEnv?: (args: TArgs | undefined) => Record<string, string> | undefined;
+	resolveEnv?: (args: TArgs | undefined) => Record<string, unknown> | undefined;
 	showHeader?: boolean;
 }
 
@@ -1532,7 +1532,7 @@ function getPartialJson<TArgs>(args: TArgs | undefined): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
-export function getBashEnvForDisplay(args: BashRenderArgs): Record<string, string> | undefined {
+export function getBashEnvForDisplay(args: BashRenderArgs): Record<string, unknown> | undefined {
 	// The parsed args don't always mirror the exact current stream prefix, so recover
 	// env from the raw JSON buffer to surface `NAME="..." cmd` in the preview as it
 	// streams rather than only once the args object finishes.

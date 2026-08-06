@@ -595,6 +595,32 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 		terminal.stop();
 	});
 
+	it("uses disambiguation-only keyboard reporting on ConPTY", () => {
+		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+		Bun.env.WSL_DISTRO_NAME = "Ubuntu";
+
+		const { terminal, writes } = setupTerminal();
+		writes.length = 0;
+		process.stdin.emit("data", "\x1b[?0u");
+
+		expect(writes).toContain("\x1b[>1u");
+		expect(writes).not.toContain("\x1b[>5u");
+		terminal.stop();
+	});
+
+	it("avoids alternate-key reporting on ConPTY while preserving parent event reporting", () => {
+		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+		Bun.env.WSL_INTEROP = "/run/WSL/1_interop";
+
+		const { terminal, writes } = setupTerminal();
+		writes.length = 0;
+		process.stdin.emit("data", "\x1b[?3u");
+
+		expect(writes).toContain("\x1b[>3u");
+		expect(writes).not.toContain("\x1b[>7u");
+		terminal.stop();
+	});
+
 	it("shutdown balances the single kitty push performed on detection", () => {
 		const { terminal, writes } = setupTerminal();
 

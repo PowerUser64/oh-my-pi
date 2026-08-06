@@ -4,8 +4,8 @@
 import type * as fs1 from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { Type } from "@oh-my-pi/omptype";
-import * as zodModule from "@oh-my-pi/omptype/zod";
+import { type } from "@oh-my-pi/omptype";
+import * as zod from "@oh-my-pi/omptype/zod";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type {
 	ImageContent,
@@ -46,6 +46,7 @@ import type {
 	ProviderConfig,
 	RegisteredCommand,
 	ToolDefinition,
+	ToolInfo,
 } from "./types";
 
 installLegacyPiSpecifierShim();
@@ -92,7 +93,7 @@ export class ExtensionRuntime implements IExtensionRuntime {
 		throw new ExtensionRuntimeNotInitializedError();
 	}
 
-	getAllTools(): string[] {
+	getAllTools(): ToolInfo[] {
 		throw new ExtensionRuntimeNotInitializedError();
 	}
 
@@ -141,8 +142,8 @@ export class ExtensionRuntime implements IExtensionRuntime {
 class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 	readonly logger = logger;
 	readonly typebox = TypeBox;
-	readonly arktype = Type;
-	readonly zod = zodModule;
+	readonly arktype = type;
+	readonly zod = zod;
 	readonly flagValues = new Map<string, boolean | string>();
 	readonly pendingProviderRegistrations: Array<{
 		name: string;
@@ -245,7 +246,7 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		return this.runtime.getActiveTools();
 	}
 
-	getAllTools(): string[] {
+	getAllTools(): ToolInfo[] {
 		return this.runtime.getAllTools();
 	}
 

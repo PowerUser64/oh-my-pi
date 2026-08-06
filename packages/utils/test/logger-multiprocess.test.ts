@@ -14,14 +14,26 @@ afterEach(async () => {
 async function makeProbe(logsDir: string): Promise<string> {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-logger-probe-"));
 	roots.push(root);
+	const releasePath = path.join(logsDir, ".release");
 	const probePath = path.join(root, "probe.ts");
 	await Bun.write(
 		probePath,
-		`import { info, setTransports } from ${JSON.stringify(loggerModuleUrl)};\n` +
+		`import * as fs from "node:fs";\n` +
+			`import { info, setTransports } from ${JSON.stringify(loggerModuleUrl)};\n` +
 			`setTransports({ file: ${JSON.stringify(logsDir)} });\n` +
 			`info("multiprocess probe");\n` +
-			`console.log("ready");\n` +
-			`await new Response(Bun.stdin.stream()).text();\n` +
+			`fs.writeSync(1, "ready\\n");\n` +
+			`await new Promise<void>(resolve => {\n` +
+			`\tconst watcher = fs.watch(${JSON.stringify(logsDir)}, (_event, name) => {\n` +
+			`\t\tif (name !== ".release") return;\n` +
+			`\t\twatcher.close();\n` +
+			`\t\tresolve();\n` +
+			`\t});\n` +
+			`\tif (fs.existsSync(${JSON.stringify(releasePath)})) {\n` +
+			`\t\twatcher.close();\n` +
+			`\t\tresolve();\n` +
+			`\t}\n` +
+			`});\n` +
 			`setTransports({ file: false });\n`,
 	);
 	return probePath;
@@ -32,22 +44,28 @@ describe("multiprocess file logging", () => {
 		const logsDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-logger-output-"));
 		roots.push(logsDir);
 		const probePath = await makeProbe(logsDir);
-		const processes = [
-			Bun.spawn([process.execPath, probePath], { stdin: "pipe", stdout: "pipe", stderr: "pipe" }),
-			Bun.spawn([process.execPath, probePath], { stdin: "pipe", stdout: "pipe", stderr: "pipe" }),
-		];
+		const stdoutPaths = [0, 1].map(index => `${probePath}.${index}.stdout`);
+		const processes = stdoutPaths.map(stdoutPath =>
+			Bun.spawn([process.execPath, probePath], {
+				stdin: "ignore",
+				stdout: Bun.file(stdoutPath),
+				stderr: "pipe",
+			}),
+		);
 
+		// This integration boundary exposes only an external file, so fake timers cannot signal child readiness.
 		const ready = await Promise.all(
-			processes.map(async proc => {
-				const reader = proc.stdout.getReader();
-				const result = await reader.read();
-				reader.releaseLock();
-				return result.value ? new TextDecoder().decode(result.value) : "";
+			stdoutPaths.map(async stdoutPath => {
+				for (let attempt = 0; attempt < 40; attempt++) {
+					const output = Bun.file(stdoutPath);
+					if ((await output.exists()) && (await output.text()) === "ready\n") return "ready\n";
+					await Bun.sleep(25);
+				}
+				return "";
 			}),
 		);
 		expect(ready).toEqual(["ready\n", "ready\n"]);
-		for (const proc of processes) proc.stdin.end();
-
+		await Bun.write(path.join(logsDir, ".release"), "");
 		expect(await Promise.all(processes.map(proc => proc.exited))).toEqual([0, 0]);
 		const entries = await fs.readdir(logsDir);
 		// DailyRotateFile's %DATE% uses the LOCAL date; don't pin an exact day
@@ -76,6 +94,7 @@ describe("multiprocess file logging", () => {
 			await Bun.write(path.join(logsDir, `.omp.${proc.pid}-audit.json`), "{}");
 		}
 
+		await Bun.write(path.join(logsDir, ".release"), "");
 		const probePath = await makeProbe(logsDir);
 		const current = Bun.spawn([process.execPath, probePath], { stdout: "ignore", stderr: "pipe" });
 		expect(await current.exited).toBe(0);

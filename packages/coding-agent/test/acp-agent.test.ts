@@ -2,21 +2,6 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type {
-	AgentSideConnection,
-	ClientCapabilities,
-	CreateElicitationRequest,
-	CreateElicitationResponse,
-	PromptRequest,
-	SessionNotification,
-} from "@agentclientprotocol/sdk";
-import {
-	zForkSessionResponse,
-	zLoadSessionResponse,
-	zNewSessionResponse,
-	zPromptResponse,
-	zSessionNotification,
-} from "@agentclientprotocol/sdk/dist/schema/zod.gen.js";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -42,17 +27,26 @@ import {
 	TTS_LOCAL_VOICE_OPTIONS,
 } from "@oh-my-pi/pi-coding-agent/tts/models";
 import { getConfigRootDir, setAgentDir } from "@oh-my-pi/pi-utils";
-import type { z } from "zod/v4";
+import type {
+	AgentSideConnection,
+	ClientCapabilities,
+	CreateElicitationRequest,
+	CreateElicitationResponse,
+	PromptRequest,
+	SessionNotification,
+	Validator,
+} from "@oh-my-pi/pi-utils/acp";
+import {
+	zForkSessionResponse,
+	zLoadSessionResponse,
+	zNewSessionResponse,
+	zPromptResponse,
+	zSessionNotification,
+} from "@oh-my-pi/pi-utils/acp";
 import { TOOL_NAME as DELAYED_MCP_TOOL_NAME } from "./fixtures/delayed-tool-mcp";
 
-/**
- * Validate an ACP wire payload against the external `@agentclientprotocol/sdk`
- * Zod schemas. Those schemas come from the ACP protocol SDK (external boundary)
- * and cannot be expressed as ArkType, so they stay on Zod and are validated via
- * `.safeParse` directly rather than through the ArkType-only `expectAcpStructure`
- * helper in `./helpers/acp-schema`.
- */
-function expectAcpStructure(schema: z.ZodType, value: unknown): void {
+/** Validates an ACP wire payload against the in-house protocol schemas. */
+function expectAcpStructure(schema: Validator<unknown>, value: unknown): void {
 	const result = schema.safeParse(value);
 	expect(result.success, result.success ? undefined : JSON.stringify(result.error.issues, null, 2)).toBe(true);
 }

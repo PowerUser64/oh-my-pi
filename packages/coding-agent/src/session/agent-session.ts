@@ -127,6 +127,7 @@ import type {
 	ToolExecutionEndEvent,
 	ToolExecutionStartEvent,
 	ToolExecutionUpdateEvent,
+	ToolInfo,
 	TreePreparation,
 	TurnEndEvent,
 	TurnStartEvent,
@@ -4181,6 +4182,11 @@ export class AgentSession {
 		return this.#tools.getAllToolNames();
 	}
 
+	/** Full metadata for every registered tool, including source provenance (backs `getAllTools()`). */
+	getAllToolInfos(): ToolInfo[] {
+		return this.#tools.getAllToolInfos();
+	}
+
 	/** Installs and activates the ephemeral vibe tool set. */
 	activateVibeTools(baseToolNames: string[]): Promise<void> {
 		return this.#tools.activateVibeTools(baseToolNames);
@@ -6681,9 +6687,10 @@ export class AgentSession {
 	}
 
 	#extractRewindReport(messages: AgentMessage[]): string | undefined {
-		if (!this.#checkpointState) return undefined;
+		const checkpointState = this.#checkpointState;
+		if (!checkpointState) return undefined;
 		if (this.#pendingRewindReport) return this.#pendingRewindReport;
-		for (let i = messages.length - 1; i >= 0; i--) {
+		for (let i = messages.length - 1; i >= checkpointState.checkpointMessageCount; i--) {
 			const message = messages[i];
 			if (message?.role !== "toolResult" || message.isError) continue;
 			const semanticResult = semanticToolResult(message.toolName, message);
