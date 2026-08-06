@@ -34,9 +34,13 @@ export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn =
 			openrouterRoutingPreset && openrouterRoutingPreset !== "default" ? openrouterRoutingPreset : undefined;
 		const antigravityEndpointMode = settings.get("providers.antigravityEndpoint");
 		const textVerbosity =
-			model.api === "openai-codex-responses" || model.api === "openai-responses"
-				? settings.get("textVerbosity")
-				: undefined;
+			model.api === "openai-codex-responses"
+				? settings.isConfigured("textVerbosity")
+					? settings.get("textVerbosity")
+					: undefined
+				: model.api === "openai-responses"
+					? settings.get("textVerbosity")
+					: undefined;
 		const streamFirstEventTimeoutMs = timeoutSecondsToMs(settings.get("providers.streamFirstEventTimeoutSeconds"));
 		const streamIdleTimeoutMs = timeoutSecondsToMs(settings.get("providers.streamIdleTimeoutSeconds"));
 		// Server-side fallback (opt-in): when the user enables it AND the

@@ -3,7 +3,7 @@ members = ["crates/pi-*", "crates/vendor/*"]
 resolver = "3"
 
 [workspace.package]
-version = "17.2.8"
+version = "17.2.9"
 edition = "2024"
 license = "MIT"
 authors = ["Can Boluk"]
@@ -138,6 +138,7 @@ option_if_let_else = "allow"                 # match/if-let-else often clearer
 enum_glob_use = "allow"
 items_after_statements = "allow" # Sometimes more readable
 wildcard_imports = "allow"       # Cleaner for preludes and test modules
+redundant_pub_crate = "allow"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Variables & Type Inference

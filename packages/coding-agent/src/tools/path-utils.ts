@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as url from "node:url";
 import { glob } from "@oh-my-pi/pi-natives";
-import { isEnoent, isEnotdir, stripWindowsExtendedLengthPathPrefix, untilAborted } from "@oh-my-pi/pi-utils";
+import { hasFsCode, isEnoent, isEnotdir, stripWindowsExtendedLengthPathPrefix, untilAborted } from "@oh-my-pi/pi-utils";
 import type { Skill } from "../extensibility/skills";
 import { InternalUrlRouter, type LocalProtocolOptions } from "../internal-urls";
 import { ToolAbortError, ToolError } from "./tool-errors";
@@ -337,6 +337,13 @@ export function splitPathAndSel(rawPath: string): { path: string; sel?: string }
  * plus selector `1-2` (issue #4618). `lstat` inspects the entry itself, so a
  * dangling symlink is still detected as present; ambiguous errors resolve to
  * `"unknown"` so callers keep the raw path instead of guessing.
+ *
+ * `ENAMETOOLONG` resolves to `"missing"` rather than `"unknown"`: a path whose
+ * component or whole length exceeds the OS limit can never name a real single
+ * entry, so it is strictly stronger evidence of non-existence than `ENOENT`.
+ * Without this, a semicolon-joined `path` list long enough to trip the limit
+ * (bare filenames past `NAME_MAX`, or a total past `PATH_MAX`) was read as one
+ * literal path and the delimited split was suppressed (issue #7597).
  */
 export async function probeLiteralPathExists(filePath: string, cwd: string): Promise<"exists" | "missing" | "unknown"> {
 	const resolved = resolveReadPath(filePath, cwd);
@@ -344,7 +351,7 @@ export async function probeLiteralPathExists(filePath: string, cwd: string): Pro
 		await fs.promises.lstat(resolved);
 		return "exists";
 	} catch (err) {
-		if (isEnoent(err) || isEnotdir(err)) return "missing";
+		if (isEnoent(err) || isEnotdir(err) || hasFsCode(err, "ENAMETOOLONG")) return "missing";
 		return "unknown";
 	}
 }
@@ -762,7 +769,10 @@ async function delimitedPathPartResolves(entry: string, cwd: string, splitter: P
 		await fs.promises.stat(absoluteBasePath);
 		return true;
 	} catch (err) {
-		if (isEnoent(err)) return false;
+		// ENOENT and ENAMETOOLONG both mean this string cannot name an existing
+		// path, so the whole entry does not resolve and the delimited split may
+		// proceed (issue #7597). Other errors (EACCES, transient I/O) stay fatal.
+		if (isEnoent(err) || hasFsCode(err, "ENAMETOOLONG")) return false;
 		throw err;
 	}
 }

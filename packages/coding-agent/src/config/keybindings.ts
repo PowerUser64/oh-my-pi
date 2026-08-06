@@ -607,12 +607,12 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 		this.setUserBindings(mergeKeybindingsConfig(inheritedConfig, profileConfig));
 	}
 
-	setUserBindings(userBindings: KeybindingsConfig): void {
+	override setUserBindings(userBindings: KeybindingsConfig): void {
 		this.#userBindings = userBindings;
 		super.setUserBindings(userBindings);
 	}
 
-	getKeys(keybinding: Keybinding): KeyId[] {
+	override getKeys(keybinding: Keybinding): KeyId[] {
 		const keys = super.getKeys(keybinding);
 		const fallbackKey = getFallbackKey(keybinding);
 		if (fallbackKey === undefined || this.#userBindings[keybinding] !== undefined) return keys;
@@ -620,7 +620,7 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 		return removeKey(keys, fallbackKey);
 	}
 
-	getResolvedBindings(): KeybindingsConfig {
+	override getResolvedBindings(): KeybindingsConfig {
 		const resolved = super.getResolvedBindings();
 		resolved[FOLLOW_UP_KEYBINDING] = keyConfigValue(this.getKeys(FOLLOW_UP_KEYBINDING));
 		return resolved;

@@ -81,6 +81,7 @@ export {
 	piLsPath,
 	piReadDisplayPath,
 	piReadPath,
+	piReadPathHasRange,
 	piTimeout,
 } from "../cursor-pi-args";
 

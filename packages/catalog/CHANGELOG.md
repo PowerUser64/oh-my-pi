@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [17.2.9] - 2026-08-05
+
 ### Fixed
 
 - Fixed Amazon Bedrock catalog generation omitting AWS GovCloud `us-gov.*` Claude inference-profile IDs, so selectors like `amazon-bedrock/us-gov.anthropic.claude-sonnet-4-5-…` resolve instead of failing model lookup (or misrouting commercial `us.*` geos onto `us-east-1` with GovCloud credentials).

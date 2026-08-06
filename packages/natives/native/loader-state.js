@@ -196,6 +196,26 @@ function isOlderReleaseVersion(candidate, current) {
 	return false;
 }
 
+// A concurrently starting older OMP binary creates or refreshes this directory
+// before extracting its addon. Keep fresh directories long enough for that
+// startup to finish; a later launch can reclaim them once they are genuinely
+// stale.
+const NATIVE_CACHE_CLEANUP_GRACE_MS = 10 * 60_000;
+
+/**
+ * Create a version cache directory and refresh its activity timestamp before
+ * extraction or staging begins. Recursive mkdir does not update the mtime of
+ * an existing directory, so the explicit touch is what protects interrupted
+ * or partially populated caches from concurrent cleanup.
+ *
+ * @param {string} versionedDir
+ */
+export function prepareNativeVersionDir(versionedDir) {
+	fs.mkdirSync(versionedDir, { recursive: true });
+	const now = new Date();
+	fs.utimesSync(versionedDir, now, now);
+}
+
 /**
  * Remove version-pinned native cache directories older than the loaded package.
  * Best-effort by design: permission errors and concurrent processes must not
@@ -217,6 +237,8 @@ export function cleanupStaleNativeVersions({ nativesDir, currentVersion }) {
 		if (!entry.isDirectory() || !isOlderReleaseVersion(entry.name, currentVersion)) continue;
 		const targetPath = path.join(nativesDir, entry.name);
 		try {
+			const stat = fs.statSync(targetPath);
+			if (Date.now() - stat.mtimeMs < NATIVE_CACHE_CLEANUP_GRACE_MS) continue;
 			fs.rmSync(targetPath, { recursive: true, force: true });
 			removed.push(targetPath);
 		} catch {
@@ -514,7 +536,7 @@ function maybeExtractEmbeddedAddon(ctx, errors) {
 
 	startupMarker("native:extractEmbeddedAddon:start");
 	try {
-		fs.mkdirSync(ctx.versionedDir, { recursive: true });
+		prepareNativeVersionDir(ctx.versionedDir);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		errors.push(`embedded addon dir: ${message}`);
@@ -581,7 +603,7 @@ function maybeStageNodeModulesAddon(ctx, errors) {
 		if (!fs.existsSync(sourcePath)) continue;
 
 		try {
-			fs.mkdirSync(ctx.versionedDir, { recursive: true });
+			prepareNativeVersionDir(ctx.versionedDir);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			errors.push(`staged addon dir: ${message}`);

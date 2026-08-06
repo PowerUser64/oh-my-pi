@@ -121,9 +121,9 @@ async function loadBrowsers(): Promise<typeof BrowsersNs> {
 }
 
 /**
- * Resolve the Chromium executable puppeteer will launch, lazily downloading it
- * on first use via @puppeteer/browsers. Skipped when a system Chromium (NixOS)
- * or PUPPETEER_EXECUTABLE_PATH is set. The browser is cached under
+ * Resolve the Chromium executable puppeteer will launch, honoring
+ * PUPPETEER_EXECUTABLE_PATH before system browser detection and lazily
+ * downloading Chromium otherwise. The browser is cached under
  * ~/.omp/puppeteer (getPuppeteerDir). Returns undefined when platform
  * detection fails (puppeteer default resolution takes over). Exported so
  * real-browser tests can probe launchability and skip on hosts missing
@@ -131,10 +131,10 @@ async function loadBrowsers(): Promise<typeof BrowsersNs> {
  */
 let chromiumExecutablePromise: Promise<string | undefined> | undefined;
 export async function ensureChromiumExecutable(): Promise<string | undefined> {
-	const sysChrome = resolveSystemChromium();
-	if (sysChrome) return sysChrome;
 	const envPath = process.env.PUPPETEER_EXECUTABLE_PATH;
 	if (envPath) return envPath;
+	const sysChrome = resolveSystemChromium();
+	if (sysChrome) return sysChrome;
 	if (chromiumExecutablePromise) return chromiumExecutablePromise;
 
 	chromiumExecutablePromise = (async () => {
@@ -199,10 +199,16 @@ function isExecutableFile(p: string): boolean {
 	}
 }
 
-function systemChromiumCandidates(): string[] {
-	const home = os.homedir();
+/** Flatpak application id published by the Ungoogled Chromium project. */
+const UNGOOGLED_CHROMIUM_FLATPAK_ID = "io.github.ungoogled_software.ungoogled_chromium";
+
+function systemChromiumCandidates(
+	platform: NodeJS.Platform = process.platform,
+	home = os.homedir(),
+	which: (name: string) => string | null | undefined = $which,
+): string[] {
 	const candidates: string[] = [];
-	switch (process.platform) {
+	switch (platform) {
 		case "darwin": {
 			for (const root of ["/Applications", path.join(home, "Applications")]) {
 				candidates.push(
@@ -219,7 +225,7 @@ function systemChromiumCandidates(): string[] {
 		case "linux": {
 			const names = ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser", "chrome"];
 			for (const name of names) {
-				const found = $which(name);
+				const found = which(name);
 				if (found) candidates.push(found);
 			}
 			candidates.push(
@@ -238,6 +244,19 @@ function systemChromiumCandidates(): string[] {
 			if (onNixos) {
 				candidates.push(path.join(home, ".nix-profile/bin/chromium"), "/run/current-system/sw/bin/chromium");
 			}
+			for (const name of ["ungoogled-chromium", "ungoogled-chromium-browser"]) {
+				const found = which(name);
+				if (found) candidates.push(found);
+			}
+			candidates.push(
+				// Ungoogled Chromium. Distro and AUR packages that keep the plain
+				// `chromium` name are already covered above; these are the paths
+				// unique to it, including the system and per-user Flatpak shims.
+				"/usr/bin/ungoogled-chromium",
+				"/usr/bin/ungoogled-chromium-browser",
+				`/var/lib/flatpak/exports/bin/${UNGOOGLED_CHROMIUM_FLATPAK_ID}`,
+				path.join(home, ".local/share/flatpak/exports/bin", UNGOOGLED_CHROMIUM_FLATPAK_ID),
+			);
 			break;
 		}
 		case "win32": {
@@ -864,6 +883,15 @@ export async function applyStealthPatches(
 	await configureUserAgentTargets(browser, targetState);
 	state.browserSession = targetState.browserSession;
 	await injectStealthScripts(page);
+}
+
+/** Exposes executable candidates for detection tests. */
+export function systemChromiumCandidatesForTest(
+	platform: NodeJS.Platform = process.platform,
+	home?: string,
+	which?: (name: string) => string | null | undefined,
+): string[] {
+	return systemChromiumCandidates(platform, home, which);
 }
 
 export function stealthIgnoreDefaultArgsForTest(executablePath: string | undefined): string[] {

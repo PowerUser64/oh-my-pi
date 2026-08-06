@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [17.2.9] - 2026-08-05
+
+### Fixed
+
+- Fixed the TypeBox adapter emitting an invalid left-bound-only DSL for min-only numeric schemas (e.g. `Type.Integer({ minimum: 1 })`), which threw `left bound requires a corresponding right bound` and broke extension tool loading ([#7648](https://github.com/can1357/oh-my-pi/issues/7648)).
+
 ## [17.2.8] - 2026-08-04
 
 ### Added

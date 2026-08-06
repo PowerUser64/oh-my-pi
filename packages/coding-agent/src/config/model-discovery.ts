@@ -724,6 +724,31 @@ export async function discoverLlamaCppModelRuntimeMetadata(
 	}
 }
 
+/**
+ * Read image-input support from an OpenAI-compatible `/v1/models` row. Handles
+ * direct `input` arrays, Synthetic-style top-level `input_modalities`, and
+ * OpenRouter-style `architecture.input_modalities`; returns undefined when none
+ * is present so the bundled reference (or the `["text"]` default) can take over.
+ */
+function extractOpenAIModelsListInputCapabilities(item: {
+	input?: unknown;
+	input_modalities?: unknown;
+	architecture?: unknown;
+}): ("text" | "image")[] | undefined {
+	const modalities = new Set<string>();
+	const collect = (value: unknown): void => {
+		if (!Array.isArray(value)) return;
+		for (const entry of value) {
+			if (typeof entry === "string") modalities.add(entry.toLowerCase());
+		}
+	};
+	collect(item.input);
+	collect(item.input_modalities);
+	if (isRecord(item.architecture)) collect(item.architecture.input_modalities);
+	if (modalities.size === 0) return undefined;
+	return modalities.has("image") ? ["text", "image"] : ["text"];
+}
+
 export async function discoverOpenAIModelsList(
 	providerConfig: DiscoveryProviderConfig,
 	ctx: DiscoveryContext,
@@ -752,7 +777,14 @@ export async function discoverOpenAIModelsList(
 				}
 				headers = h;
 				return (await res.json()) as {
-					data?: Array<{ id?: string; max_model_len?: unknown; context_length?: unknown }>;
+					data?: Array<{
+						id?: string;
+						max_model_len?: unknown;
+						context_length?: unknown;
+						input?: unknown;
+						input_modalities?: unknown;
+						architecture?: unknown;
+					}>;
 				};
 			}),
 			nativeMetadataPromise,
@@ -796,7 +828,9 @@ export async function discoverOpenAIModelsList(
 				baseUrl,
 				reasoning: reference?.reasoning ?? false,
 				thinking: inheritReferenceThinking(undefined, reference, providerConfig.provider),
-				input: nativeMetadataForModel?.input ?? reference?.input ?? ["text"],
+				input: nativeMetadataForModel?.input ??
+					extractOpenAIModelsListInputCapabilities(item) ??
+					reference?.input ?? ["text"],
 				...(providerConfig.discovery.type === "lm-studio" ? { imageInputDecoder: "stb" as const } : {}),
 				// Proxy/gateway pricing is provider-specific and rarely matches
 				// upstream bundled catalogs, so keep costs local-unknown even

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
-import { isUsageLimit } from "@oh-my-pi/pi-ai/error/flags";
+import { classify, Flag, is, isUsageLimit, retriable } from "@oh-my-pi/pi-ai/error/flags";
 import {
 	calculateRateLimitBackoffMs,
+	isConcurrencyCapExclusion,
 	isUsageLimitOutcome,
 	isUsageLimitStatus,
 	parseRateLimitReason,
@@ -56,6 +57,30 @@ describe("parseRateLimitReason", () => {
 
 	it("classifies per minute errors as RATE_LIMIT_EXCEEDED", () => {
 		expect(parseRateLimitReason("Requests per minute limit reached")).toBe("RATE_LIMIT_EXCEEDED");
+	});
+
+	it("classifies concurrent request caps separately from rate limits and quota exhaustion", () => {
+		expect(parseRateLimitReason("Number of concurrent requests exceeded")).toBe("CONCURRENT_LIMIT");
+		expect(parseRateLimitReason("Maximum concurrent invocation limit reached")).toBe("CONCURRENT_LIMIT");
+		expect(parseRateLimitReason("concurrent_limit_exceeded")).toBe("CONCURRENT_LIMIT");
+		expect(parseRateLimitReason("concurrent_requests_limit_reached")).toBe("CONCURRENT_LIMIT");
+		expect(parseRateLimitReason("concurrency_quota_exceeded")).toBe("CONCURRENT_LIMIT");
+		expect(parseRateLimitReason("Too many concurrent requests")).toBe("CONCURRENT_LIMIT");
+		expect(parseRateLimitReason("Too many concurrent invocations")).toBe("CONCURRENT_LIMIT");
+		expect(parseRateLimitReason("Rate limit reached for gpt-4o")).toBe("RATE_LIMIT_EXCEEDED");
+		expect(parseRateLimitReason("Your quota will reset at 07-28")).toBe("QUOTA_EXHAUSTED");
+	});
+
+	// Deterministic 4xx feature rejections worded with bare concurrency nouns
+	// ("concurrent request/invocation is not supported") must not classify as a
+	// concurrency cap — doing so would set Flag.Transient and retry the rejection
+	// instead of surfacing it. A cap needs an explicit limit/quota/exceeded/reached
+	// signal near "concurrent".
+	it("does not classify bare concurrency feature rejections as CONCURRENT_LIMIT", () => {
+		expect(parseRateLimitReason("Concurrent invocation is not supported")).not.toBe("CONCURRENT_LIMIT");
+		expect(parseRateLimitReason("Only one concurrent request is supported")).not.toBe("CONCURRENT_LIMIT");
+		// The deterministic rejection must surface as a hard error, not be retried.
+		expect(is(classify("Concurrent invocation is not supported"), Flag.Transient)).toBe(false);
 	});
 
 	it("classifies overloaded 529 as MODEL_CAPACITY_EXHAUSTED", () => {
@@ -266,6 +291,30 @@ describe("isUsageLimitOutcome", () => {
 		expect(isUsageLimitOutcome(429, message)).toBe(true);
 	});
 
+	it("rotates only account-scoped cap 403s and statusless trailers", () => {
+		const devinTrailer =
+			"Devin stream error permission_denied: Reached overall message rate limit. Please try again later. Your limit will reset in 13 minutes.";
+		// HTTP 403 with the account-scoped body rotates.
+		expect(isUsageLimitOutcome(403, devinTrailer)).toBe(true);
+		// Devin's Connect trailer carries no HTTP status (a permission_denied
+		// ValidationError), so it must rotate on an undefined status too —
+		// otherwise the exhausted credential is retried as a transient failure.
+		expect(isUsageLimitOutcome(undefined, devinTrailer)).toBe(true);
+		expect(isUsageLimit(devinTrailer)).toBe(true);
+		expect(isUsageLimitOutcome(403, "Forbidden")).toBe(false);
+	});
+
+	// A statusless per-minute reset-window transient ("Rate limit will reset in
+	// 30 seconds") is ordinary throttling (RATE_LIMIT_EXCEEDED), not an account
+	// usage cap. The reset-window alternative is gated on account scope so it stays
+	// in the backoff lane instead of rotating the credential.
+	it("does not rotate on a statusless per-minute reset-window transient", () => {
+		const message = "Rate limit will reset in 30 seconds";
+		expect(parseRateLimitReason(message)).toBe("RATE_LIMIT_EXCEEDED");
+		expect(isUsageLimitOutcome(undefined, message)).toBe(false);
+		expect(isUsageLimit(message)).toBe(false);
+	});
+
 	it("rotates on xAI Grok Build 402 usage-balance exhaustion regardless of status", () => {
 		const message = "402 Grok Build usage balance exhausted";
 		expect(isUsageLimitOutcome(402, message)).toBe(true);
@@ -285,6 +334,59 @@ describe("isUsageLimitOutcome", () => {
 		expect(isUsageLimitOutcome(401, "Invalid API key")).toBe(false);
 		expect(isUsageLimitOutcome(400, "invalid_request_error: model unsupported")).toBe(false);
 	});
+
+	// Vertex returns "Online prediction concurrent requests quota exceeded" for a
+	// concurrent-request cap. The generic USAGE_LIMIT_PATTERN matches
+	// `quota.?exceeded`, but this is a concurrency cap (5s backoff, no rotation),
+	// not account quota exhaustion. CONCURRENT_LIMIT must take precedence so the
+	// credential is not burned.
+	it("does not rotate on Vertex quota-worded concurrency caps", () => {
+		const message = "Online prediction concurrent requests quota exceeded";
+		expect(parseRateLimitReason(message)).toBe("CONCURRENT_LIMIT");
+		expect(isUsageLimitOutcome(429, message)).toBe(false);
+		expect(isUsageLimit(message)).toBe(false);
+	});
+
+	it("excludes non-billing concurrency caps from credential rotation", () => {
+		const message = "concurrent requests limit reached";
+		expect(isConcurrencyCapExclusion(403, message)).toBe(true);
+		expect(isConcurrencyCapExclusion(undefined, message)).toBe(true);
+		expect(isConcurrencyCapExclusion(402, message)).toBe(false);
+		expect(isConcurrencyCapExclusion(403, "Forbidden")).toBe(false);
+		const classified = classify(new ProviderHttpError(message, 403));
+		expect(is(classified, Flag.AuthFailed)).toBe(false);
+		expect(is(classified, Flag.Transient)).toBe(true);
+	});
+
+	// The same bare concurrency wording can reach turn recovery without a
+	// preserved HTTP status (Vertex/Bedrock paths that bypass API-key
+	// resolution). The body misses TRANSIENT_TRANSPORT_PATTERN, so without an
+	// explicit Flag.Transient the temporary cap classifies as terminal and is
+	// never retried. It must stay shed-and-backoff (transient/retriable).
+	it("keeps statusless concurrency caps transient and retriable", () => {
+		const message = "Online prediction concurrent requests quota exceeded";
+		const id = classify(message);
+		expect(is(id, Flag.Transient)).toBe(true);
+		expect(retriable(id)).toBe(true);
+	});
+
+	// HTTP 402 is categorically an account-billing cap, so a 402 whose body is
+	// worded as a concurrency cap still rotates — the billing-cap status wins
+	// over the concurrency exclusion. The identical concurrency wording on a
+	// quota-worded 429 stays non-rotatable (5s backoff). This pins the
+	// 402-billing-cap > concurrency-exclusion precedence in both the rotation
+	// decision (isUsageLimitOutcome) and the Flag.UsageLimit classification
+	// (isUsageLimit).
+	it("rotates on 402 concurrency-worded billing caps but not 429 concurrency caps", () => {
+		const message = "concurrent requests limit reached";
+		expect(parseRateLimitReason(message)).toBe("CONCURRENT_LIMIT");
+		// 402 billing cap wins: rotate.
+		expect(isUsageLimitOutcome(402, message)).toBe(true);
+		expect(isUsageLimit(Object.assign(new Error(message), { status: 402 }))).toBe(true);
+		// 429 concurrency cap: shed-and-backoff, do not rotate.
+		expect(isUsageLimitOutcome(429, message)).toBe(false);
+		expect(isUsageLimit(Object.assign(new Error(message), { status: 429 }))).toBe(false);
+	});
 });
 
 describe("calculateRateLimitBackoffMs", () => {
@@ -294,5 +396,9 @@ describe("calculateRateLimitBackoffMs", () => {
 			expect(ms).toBeGreaterThanOrEqual(45_000);
 			expect(ms).toBeLessThanOrEqual(75_000);
 		}
+	});
+
+	it("returns a short backoff for CONCURRENT_LIMIT", () => {
+		expect(calculateRateLimitBackoffMs("CONCURRENT_LIMIT")).toBe(5_000);
 	});
 });

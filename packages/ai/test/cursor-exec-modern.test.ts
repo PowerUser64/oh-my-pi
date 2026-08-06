@@ -1680,6 +1680,31 @@ describe("Cursor legacy read frame: range reporting", () => {
 		if (wholeAnswer.value.result.case !== "success") throw new Error(`got ${wholeAnswer.value.result.case}`);
 		expect(wholeAnswer.value.result.value.rangeApplied).toBe(false);
 	});
+	it("treats a path-embedded selector as ranged without reporting the slice as the file total", async () => {
+		const slice = Array.from({ length: 55 }, (_, index) => `line ${index + 301}`).join("\n");
+		const { frames } = await dispatchExec(
+			buildExecMessage({
+				case: "readArgs",
+				value: create(ReadArgsSchema, {
+					path: "/repo/plan.md:raw:301-",
+					toolCallId: "c-inline",
+				}),
+			}),
+			{
+				execHandlers: {
+					async read() {
+						return toolResult(slice, { details: { fileSize: 21_015 } });
+					},
+				},
+			},
+		);
+		const answer = soleResult(frames);
+		if (answer.case !== "readResult") throw new Error(`got ${answer.case}`);
+		if (answer.value.result.case !== "success") throw new Error(`got ${answer.value.result.case}`);
+		expect(answer.value.result.value.totalLines).toBe(0);
+		expect(answer.value.result.value.rangeApplied).toBe(true);
+		expect(answer.value.result.value.fileSize).toBe(21_015n);
+	});
 
 	it("carries the composed selector into the synthesized call", async () => {
 		// A bare path beside a ranged result makes the slice look like the whole

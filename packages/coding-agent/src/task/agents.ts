@@ -85,7 +85,7 @@ export class AgentParsingError extends Error {
 		this.name = "AgentParsingError";
 	}
 
-	toString(): string {
+	override toString(): string {
 		const details: string[] = [this.message];
 		if (this.source !== undefined) {
 			details.push(`Source: ${JSON.stringify(this.source)}`);

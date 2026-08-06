@@ -327,9 +327,8 @@ mod tests {
 	fn ext_sort_spills_to_files_and_sorts() {
 		let input: String = (0..200u32).rev().map(|i| format!("{i:04}\n")).collect();
 
-		let mut settings = GlobalSettings::default();
-		settings.buffer_size = 64;
-		settings.buffer_size_is_explicit = true;
+		let settings =
+			GlobalSettings { buffer_size: 64, buffer_size_is_explicit: true, ..Default::default() };
 
 		let out_dir = tempfile::tempdir().expect("temp dir");
 		let out_path = out_dir.path().join("sorted.txt");

@@ -8583,12 +8583,12 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 
 	/// A segment that carries a file redirect is still segmented, and the brush
 	/// `Display` reconstruction the runner executes must round-trip through
-	/// brush's own parser **without losing the redirect**. `echo hidden
-	/// >/dev/null` suppresses its own stdout: if the reconstruction dropped the
-	/// redirect, `hidden` would leak into the captured output. Proves the
-	/// reconstruction path is semantically sound for the redirect-bearing
-	/// shapes the per-stage whitelist accepts (not just syntactically
-	/// parseable).
+	/// brush's own parser **without losing the redirect**.
+	/// `echo hidden >/dev/null` suppresses its own stdout: if the reconstruction
+	/// dropped the redirect, `hidden` would leak into the captured output.
+	/// Proves the reconstruction path is semantically sound for the
+	/// redirect-bearing shapes the per-stage whitelist accepts (not just
+	/// syntactically parseable).
 	#[cfg(unix)]
 	#[tokio::test(flavor = "multi_thread")]
 	async fn segmented_chain_with_redirect_executes_correctly() {

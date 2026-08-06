@@ -1715,7 +1715,10 @@ export class ModelRegistry {
 			return resolveOllamaModelCacheProviderId(providerConfig.provider, providerConfig.baseUrl);
 		}
 		if (providerConfig.discovery.type === "openai-models-list") {
-			return `${providerConfig.provider}:openai-models-list-context-v2`;
+			// context-v3 invalidates rows cached before server-advertised input
+			// modalities were parsed from `/v1/models`; warm v2 rows pinned
+			// vision-capable ids at `input: ["text"]` until a forced refresh.
+			return `${providerConfig.provider}:openai-models-list-context-v3`;
 		}
 		if (providerConfig.discovery.type === "litellm") {
 			// rich-v2 invalidates rows cached before reseller usage-suffix stripping

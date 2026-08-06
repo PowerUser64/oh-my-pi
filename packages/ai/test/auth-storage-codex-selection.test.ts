@@ -418,6 +418,37 @@ describe("AuthStorage codex oauth ranking", () => {
 		expect(apiKey).toBe("api-acct-healthy");
 	});
 
+	test("selects an explicitly allowed 100% Team account over a rejected exhausted sibling", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+
+		await authStorage.set("openai-codex", [
+			{ type: "oauth", ...createCredential("acct-exhausted", "exhausted@example.com") },
+			{ type: "oauth", ...createCredential("acct-team", "team@example.com") },
+		]);
+
+		usageByAccount.set(
+			"acct-exhausted",
+			createCodexUsageReport({
+				accountId: "acct-exhausted",
+				primary: { usedFraction: 1, resetInMs: 3 * 24 * HOUR_MS },
+				secondary: { usedFraction: 1, resetInMs: 3 * 24 * HOUR_MS },
+				metadata: { allowed: false, limitReached: true, planType: "prolite" },
+			}),
+		);
+		const teamReport = createCodexUsageReport({
+			accountId: "acct-team",
+			primary: { usedFraction: 0.2, resetInMs: HOUR_MS },
+			secondary: { usedFraction: 1, resetInMs: 6 * 24 * HOUR_MS },
+			metadata: { allowed: true, limitReached: false, planType: "team" },
+		});
+		const teamSecondary = teamReport.limits.find(limit => limit.id === "openai-codex:secondary");
+		if (!teamSecondary) throw new Error("expected Team weekly usage limit");
+		teamSecondary.status = "warning";
+		usageByAccount.set("acct-team", teamReport);
+
+		expect(await authStorage.getApiKey("openai-codex", "allowed-team-at-100-percent")).toBe("api-acct-team");
+	});
+
 	test("temporarily blocks only the exhausted Codex OAuth credential after a quota 429", async () => {
 		if (!authStorage) throw new Error("test setup failed");
 
@@ -2025,6 +2056,90 @@ describe("AuthStorage codex oauth ranking", () => {
 			modelId: "gpt-5.3-codex-spark",
 		});
 		expect(apiKey).toBe("api-acct-pro");
+	});
+
+	test("ignores plan-ineligible headroom when reporting Spark model health", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+
+		await authStorage.set("openai-codex", [
+			{ type: "oauth", ...createCredential("acct-free", "free@example.com") },
+			{ type: "oauth", ...createCredential("acct-pro", "pro@example.com") },
+		]);
+		usageByAccount.set(
+			"acct-free",
+			addSparkUsage(
+				createCodexUsageReport({
+					accountId: "acct-free",
+					primary: { usedFraction: 0.05, resetInMs: 30 * 60 * 1000 },
+					secondary: { usedFraction: 0.05, resetInMs: 6 * 24 * 60 * 60 * 1000 },
+					metadata: { planType: "free", email: "free@example.com" },
+				}),
+				0.05,
+				0.05,
+			),
+		);
+		usageByAccount.set(
+			"acct-pro",
+			addSparkUsage(
+				createCodexUsageReport({
+					accountId: "acct-pro",
+					primary: { usedFraction: 1, resetInMs: 2 * HOUR_MS },
+					secondary: { usedFraction: 1, resetInMs: 6 * 24 * 60 * 60 * 1000 },
+					metadata: { planType: "pro", email: "pro@example.com", limitReached: true },
+				}),
+				1,
+				1,
+			),
+		);
+
+		const health = await authStorage.getModelUsageHealth("openai-codex", {
+			modelId: "gpt-5.3-codex-spark",
+			reserveFraction: 0.1,
+		});
+
+		expect(health.state).toBe("depleted");
+		expect(health.accounts).toHaveLength(1);
+		expect(health.accounts[0]?.state).toBe("depleted");
+	});
+
+	test("reports an all-plan-ineligible Codex pool as depleted", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+
+		await authStorage.set("openai-codex", [
+			{ type: "oauth", ...createCredential("acct-free", "free@example.com") },
+			{ type: "oauth", ...createCredential("acct-plus", "plus@example.com") },
+		]);
+		usageByAccount.set(
+			"acct-free",
+			createCodexUsageReport({
+				accountId: "acct-free",
+				primary: { usedFraction: 0.05, resetInMs: 30 * 60 * 1000 },
+				secondary: { usedFraction: 0.05, resetInMs: 6 * 24 * 60 * 60 * 1000 },
+				metadata: { planType: "free", email: "free@example.com" },
+			}),
+		);
+		usageByAccount.set(
+			"acct-plus",
+			createCodexUsageReport({
+				accountId: "acct-plus",
+				primary: { usedFraction: 0.05, resetInMs: 30 * 60 * 1000 },
+				secondary: { usedFraction: 0.05, resetInMs: 6 * 24 * 60 * 60 * 1000 },
+				metadata: { planType: "plus", email: "plus@example.com" },
+			}),
+		);
+
+		const paidHealth = await authStorage.getModelUsageHealth("openai-codex", {
+			modelId: "gpt-5.6-sol",
+			reserveFraction: 0.1,
+		});
+		const proHealth = await authStorage.getModelUsageHealth("openai-codex", {
+			modelId: "gpt-5.3-codex-spark",
+			reserveFraction: 0.1,
+		});
+
+		expect(paidHealth.state).toBe("healthy");
+		expect(paidHealth.accounts).toHaveLength(1);
+		expect(proHealth).toEqual({ state: "depleted", accounts: [] });
 	});
 
 	test("routes codex spark to a single Plus account when no Pro is connected", async () => {

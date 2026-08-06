@@ -27,7 +27,10 @@ class DetachingRewriteStorage extends MemorySessionStorage {
 	guardRejections = 0;
 	readonly #writers = new Set<DetachableWriter>();
 
-	openWriter(path: string, options?: { flags?: "a" | "w"; onError?: (err: Error) => void }): SessionStorageWriter {
+	override openWriter(
+		path: string,
+		options?: { flags?: "a" | "w"; onError?: (err: Error) => void },
+	): SessionStorageWriter {
 		const inner = super.openWriter(path, options);
 		const writers = this.#writers;
 		const detachedLines = this.detachedLines;

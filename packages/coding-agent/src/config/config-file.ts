@@ -109,11 +109,11 @@ export class ConfigError extends Error {
 		this.#message = message;
 	}
 
-	get message(): string {
+	override get message(): string {
 		return this.#message;
 	}
 
-	toString(): string {
+	override toString(): string {
 		return this.message;
 	}
 }

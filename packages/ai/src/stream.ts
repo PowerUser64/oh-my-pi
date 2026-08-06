@@ -21,7 +21,7 @@ import { createAuthRetryKeyState, isApiKeyResolver, resolveNextAuthRetryKey } fr
 import * as AIError from "./error";
 import { ProviderHttpError } from "./error";
 import { isInvalidatedOAuthTokenError } from "./error/auth-classify";
-import { isUsageLimitOutcome } from "./error/rate-limit";
+import { isConcurrencyCapExclusion, isUsageLimitOutcome } from "./error/rate-limit";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
 import { coworkFetch } from "./providers/cowork-fetch";
@@ -995,7 +995,7 @@ function isRetryableUpstreamError(error: unknown, status: number | undefined, me
 	// instead of burning siblings.
 	if (AIError.isUsageLimit(error)) return true;
 	if (isInvalidatedOAuthTokenError(error)) return true;
-	if (status === 401 || status === 403) return true;
+	if (status === 401 || (status === 403 && !isConcurrencyCapExclusion(status, message))) return true;
 	return isUsageLimitOutcome(status, message);
 }
 
@@ -1705,7 +1705,7 @@ function mapOptionsForApi<TApi extends Api>(
 				serviceTier: options?.serviceTier,
 				preferWebsockets: options?.preferWebsockets,
 				codexCompaction: options?.codexCompaction,
-				reasoningSummary: options?.hideThinkingSummary ? null : "detailed",
+				reasoningSummary: options?.hideThinkingSummary ? null : undefined,
 				textVerbosity: options?.textVerbosity,
 			});
 

@@ -267,9 +267,19 @@ function tNumber(opts?: NumberOpts, integer = false): TNumber {
 		upper = { value: opts.exclusiveMaximum, exclusive: true };
 	}
 	const keyword = integer ? "number.integer" : "number";
-	const lowerDsl = lower ? `${lower.value} ${lower.exclusive ? "<" : "<="} ` : "";
-	const upperDsl = upper ? ` ${upper.exclusive ? "<" : "<="} ${upper.value}` : "";
-	let schema = asRuntime<number>(type.raw(`${lowerDsl}${keyword}${upperDsl}`));
+	// The `LO <= TYPE <= HI` range spelling requires both bounds; a min-only
+	// bound must use the postfix `TYPE >= LO` form (see parseBounded in ir.ts).
+	let src: string;
+	if (lower && upper) {
+		src = `${lower.value} ${lower.exclusive ? "<" : "<="} ${keyword} ${upper.exclusive ? "<" : "<="} ${upper.value}`;
+	} else if (lower) {
+		src = `${keyword} ${lower.exclusive ? ">" : ">="} ${lower.value}`;
+	} else if (upper) {
+		src = `${keyword} ${upper.exclusive ? "<" : "<="} ${upper.value}`;
+	} else {
+		src = keyword;
+	}
+	let schema = asRuntime<number>(type.raw(src));
 	if (opts?.multipleOf !== undefined) {
 		const divisor = opts.multipleOf;
 		schema = schema.narrow((value, ctx) => {

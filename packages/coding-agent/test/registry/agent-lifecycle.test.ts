@@ -314,6 +314,23 @@ describe("AgentLifecycleManager", () => {
 		expect(registry.get("6-Sub")).toBeUndefined();
 	});
 
+	it("does not let one stuck adopted agent block sibling disposal", async () => {
+		const gate = deferred();
+		const stuck = makeSessionStub(() => gate.promise);
+		const sibling = makeSessionStub();
+		registerIdleSub("stuck-Sub", stuck.session);
+		registerIdleSub("sibling-Sub", sibling.session);
+		lifecycle.adopt("stuck-Sub", { idleTtlMs: TTL });
+		lifecycle.adopt("sibling-Sub", { idleTtlMs: TTL });
+
+		await lifecycle.dispose(Date.now());
+
+		expect(stuck.disposeCalls()).toBe(1);
+		expect(sibling.disposeCalls()).toBe(1);
+		gate.resolve();
+		await flushAsync();
+	});
+
 	it("a delayed release cannot remove or mutate a replacement ref with the same id", async () => {
 		const gate = deferred();
 		const oldSession = makeSessionStub(() => gate.promise);
@@ -597,10 +614,11 @@ describe("AgentLifecycleManager", () => {
 		// session (the ref carries session === null), it treats it as unrevivable.
 		await expect(lifecycle.ensureLive(workerId)).rejects.toThrow(/aborted/);
 
-		// Reopening the Agent Hub rescans on-disk transcripts. The surviving
-		// `.jsonl` must not be re-adopted as a fresh `parked` row, because the
-		// id is still present in the registry.
-		await registerPersistedSubagents(registry, rootSessionFile);
-		expect(registry.get(workerId)?.status).toBe("aborted");
+		// Reopening after the original registry is gone must preserve the terminal
+		// decision from the sidecar, not infer a fresh parked agent from the JSONL.
+		expect(await Bun.file(`${workerSessionFile}.tombstone`).exists()).toBe(true);
+		const restoredRegistry = new AgentRegistry();
+		await registerPersistedSubagents(restoredRegistry, rootSessionFile);
+		expect(restoredRegistry.get(workerId)?.status).toBe("aborted");
 	});
 });

@@ -1,6 +1,6 @@
 import { extractHttpStatusFromError } from "@oh-my-pi/pi-utils";
 import { isOAuthExpiry, isUsageLimit } from "./flags";
-import { isUsageLimitOutcome } from "./rate-limit";
+import { isConcurrencyCapExclusion, isUsageLimitOutcome } from "./rate-limit";
 
 /**
  * Whether an OAuth refresh failure is definitive (the credential must be
@@ -38,9 +38,10 @@ export function isAuthRetryableError(error: unknown): boolean {
 	if (isUsageLimit(error)) return true;
 	if (isInvalidatedOAuthTokenError(error)) return true;
 	const httpStatus = extractHttpStatusFromError(error);
-	if (httpStatus === 401 || httpStatus === 403) return true;
 	const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
 	const embeddedStatus = message ? extractHttpStatusFromError({ message }) : undefined;
-	if (embeddedStatus === 401 || embeddedStatus === 403) return true;
-	return isUsageLimitOutcome(httpStatus ?? embeddedStatus, message);
+	const status = httpStatus ?? embeddedStatus;
+	if (isConcurrencyCapExclusion(status, message)) return false;
+	if (status === 401 || status === 403) return true;
+	return isUsageLimitOutcome(status, message);
 }

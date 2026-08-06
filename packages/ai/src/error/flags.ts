@@ -7,7 +7,13 @@ import {
 	ProviderHttpError,
 	STREAM_ENVELOPE_ERROR_PREFIX,
 } from "./classes";
-import { isOpaqueStatusBody, isUsageLimitStatus, matchesUsageLimitText, parseRateLimitReason } from "./rate-limit";
+import {
+	isAccountScopedCapText,
+	isOpaqueStatusBody,
+	isUsageLimitStatus,
+	matchesUsageLimitText,
+	parseRateLimitReason,
+} from "./rate-limit";
 
 export const Flag = {
 	Class: 0x1000,
@@ -339,15 +345,34 @@ function classifyText(errorMessage: string | undefined, errorStatus: number | un
 		const isOpaque = isOpaqueStatusBody(cleanMessage);
 
 		const isLimitStatus = isUsageLimitStatus(statusClean);
+		const reason = parseRateLimitReason(cleanMessage);
+		// Concurrency caps (e.g. Vertex "Online prediction concurrent requests
+		// quota exceeded") are shed-and-backoff, not credential-rotatable —
+		// exclude them even when the quota-worded phrasing matches the generic
+		// usage-limit text matcher, whose `quota.?exceeded` arm would otherwise
+		// set Flag.UsageLimit and burn a healthy sibling credential. HTTP 402 is
+		// excluded from this gate: it is categorically an account-billing cap, so
+		// a 402 whose body merely mentions concurrency still classifies as a
+		// usage limit, mirroring isUsageLimitOutcome.
+		const isBillingCapStatus = statusClean === 402;
+		const concurrencyExcluded = reason === "CONCURRENT_LIMIT" && !isBillingCapStatus;
 		if (
-			matchesUsageLimitText(cleanMessage) ||
-			(isLimitStatus && (isOpaque || parseRateLimitReason(cleanMessage) === "QUOTA_EXHAUSTED"))
+			!concurrencyExcluded &&
+			(matchesUsageLimitText(cleanMessage) ||
+				((statusClean === 403 || statusClean === undefined) && isAccountScopedCapText(cleanMessage)) ||
+				(isLimitStatus &&
+					(isOpaque || reason === "QUOTA_EXHAUSTED" || (isBillingCapStatus && reason === "CONCURRENT_LIMIT"))))
 		) {
 			kinds |= Flag.UsageLimit;
 		}
 
 		if (isTimeoutText(errorMessage)) kinds |= Flag.Transient | Flag.Timeout;
 		else if (isTransientErrorText(errorMessage)) kinds |= Flag.Transient;
+		// A concurrency cap (e.g. Vertex "Online prediction concurrent requests
+		// quota exceeded") is transient — shed-and-backoff. The bare wording need
+		// not match TRANSIENT_TRANSPORT_PATTERN, so flag it explicitly to keep
+		// AIError.retriable from treating the temporary cap as terminal.
+		if (reason === "CONCURRENT_LIMIT") kinds |= Flag.Transient;
 		if ((api === "openai-responses" || api === "openai-codex-responses") && isStaleResponsesText(errorMessage)) {
 			kinds |= Flag.StaleResponsesItem;
 		}
@@ -405,7 +430,10 @@ export function classify(error: unknown, api?: Api): number {
 			if (code === "overloaded_error" || code === "rate_limit_error") {
 				linkKinds |= Flag.Transient;
 			}
-			if (codeStatus === 401 || codeStatus === 403) {
+			if (
+				(codeStatus === 401 || codeStatus === 403) &&
+				!(codeStatus === 403 && parseRateLimitReason(link.message) === "CONCURRENT_LIMIT")
+			) {
 				linkKinds |= Flag.AuthFailed;
 			} else if (codeStatus === 429) {
 				if ((linkKinds & Flag.UsageLimit) === 0) {

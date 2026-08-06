@@ -380,6 +380,30 @@ describe("update-cli bun cache pruning", () => {
 		expect(await Bun.file(path.join(dir, "pkg", "1.0.0@@@1")).exists()).toBe(true);
 		expect(await Bun.file(path.join(dir, "pkg@1.0.0@@@1", "package.json")).exists()).toBe(true);
 	});
+
+	it("compares numeric version segments without precision loss", async () => {
+		const dir = await makeTempDir();
+		const older = "1.0.99999999999999999999";
+		const newer = "1.0.100000000000000000000";
+		await Bun.write(path.join(dir, "pkg", `${older}@@@1`), "");
+		await Bun.write(path.join(dir, "pkg", `${newer}@@@1`), "");
+		await Bun.write(
+			path.join(dir, `pkg@${older}@@@1`, "package.json"),
+			JSON.stringify({ name: "pkg", version: older }),
+		);
+		await Bun.write(
+			path.join(dir, `pkg@${newer}@@@1`, "package.json"),
+			JSON.stringify({ name: "pkg", version: newer }),
+		);
+
+		const result = await pruneBunInstallCache(dir, new Set(["pkg"]));
+
+		expect(result).toEqual({ scannedPackages: 1, removedEntries: 2 });
+		expect(await Bun.file(path.join(dir, "pkg", `${older}@@@1`)).exists()).toBe(false);
+		expect(await Bun.file(path.join(dir, `pkg@${older}@@@1`, "package.json")).exists()).toBe(false);
+		expect(await Bun.file(path.join(dir, "pkg", `${newer}@@@1`)).exists()).toBe(true);
+		expect(await Bun.file(path.join(dir, `pkg@${newer}@@@1`, "package.json")).exists()).toBe(true);
+	});
 });
 
 describe("update-cli release binary integrity", () => {

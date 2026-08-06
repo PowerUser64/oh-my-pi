@@ -3,7 +3,7 @@ import type { OAuthAccess } from "./auth-storage";
 import * as AIError from "./error";
 import { isAuthRetryableError, isInvalidatedOAuthTokenError } from "./error/auth-classify";
 import { isUsageLimit } from "./error/flags";
-import { isUsageLimitOutcome } from "./error/rate-limit";
+import { isConcurrencyCapExclusion, isUsageLimitOutcome } from "./error/rate-limit";
 
 /**
  * Context passed to an {@link ApiKeyResolver} on each resolution attempt.
@@ -93,11 +93,14 @@ export const AUTH_RETRY_MAX_ATTEMPTS = 64;
 function isDirectCredentialRotationError(error: unknown): boolean {
 	if (isUsageLimit(error) || isInvalidatedOAuthTokenError(error)) return true;
 	const status = AIError.status(error);
-	// 403: the token is valid but access was denied, so refreshing the same
-	// credential can't help — rotate straight through the sibling pool.
-	if (status === 403) return true;
 	const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
-	if (status === undefined && message !== undefined && extractHttpStatusFromError({ message }) === 403) return true;
+	// A 403 normally means a valid token lacks access, so rotate through
+	// siblings. A concurrency-cap 403 is transient instead; do not burn a
+	// sibling before the caller's backoff layer can retry it.
+	const isForbidden =
+		status === 403 ||
+		(status === undefined && message !== undefined && extractHttpStatusFromError({ message }) === 403);
+	if (isForbidden && !isConcurrencyCapExclusion(status, message)) return true;
 	return isUsageLimitOutcome(status, message);
 }
 

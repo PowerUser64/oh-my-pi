@@ -128,7 +128,7 @@ export class ExtensionUiController {
 		};
 		this.ctx.setToolUIContext(uiContext, true);
 		this.#toolUIContext = uiContext;
-		this.ctx.session.setUsageFallbackConfirmer?.(confirmation => {
+		this.ctx.session.setUsageFallbackConfirmer?.((confirmation, signal) => {
 			const reserve =
 				confirmation.remainingPercent === undefined
 					? "inside the configured reserve margin"
@@ -136,6 +136,7 @@ export class ExtensionUiController {
 			return this.showHookConfirm(
 				"Coding-plan reserve reached",
 				`${confirmation.from} has ${reserve}. Switch to ${confirmation.to}? Choose No to keep using the current plan.`,
+				{ signal },
 			);
 		});
 

@@ -466,7 +466,7 @@ export class CustomEditor extends Editor {
 	/** Decorate magic keywords, attachments, and the queue-composer header/list markers.
 	 *  Queue shorthand reserves its first logical line as a dim `Queueing` label; sequential
 	 *  item markers use the accent color so separate follow-ups remain visible while composing. */
-	decorateText = (text: string): string => {
+	override decorateText = (text: string): string => {
 		const editorText = this.getText();
 		const animated = this.focused && this.#shimmerEnabled() && hasMagicKeyword(editorText);
 		const phase = animated ? (Date.now() % CustomEditor.SHIMMER_PERIOD_MS) / CustomEditor.SHIMMER_PERIOD_MS : 0;
@@ -775,7 +775,7 @@ export class CustomEditor extends Editor {
 		void promise.then(this.#onPasteSettled, this.#onPasteSettled);
 	}
 
-	handleInput(data: string): void {
+	override handleInput(data: string): void {
 		// Serialize behind any in-flight async paste so a trailing Enter / follow-up key can't
 		// submit before the clipboard image reaches `pendingImages` (Codex PR #3602 review).
 		if (this.#pasteInFlight > 0) {

@@ -55,7 +55,7 @@ export class Loader extends Text {
 		this.start();
 	}
 
-	render(width: number): readonly string[] {
+	override render(width: number): readonly string[] {
 		const source = super.render(width);
 		if (source !== this.#layoutSource) {
 			const paddingX = getPaddingX(1);

@@ -263,11 +263,10 @@ function buildUsageAmount(window: ParsedUsageWindow): UsageAmount {
 	};
 }
 
-function buildUsageStatus(usedFraction?: number, limitReached?: boolean): UsageLimit["status"] {
-	if (limitReached) return "exhausted";
-	if (usedFraction === undefined) return "unknown";
-	if (usedFraction >= 1) return "exhausted";
-	if (usedFraction >= 0.9) return "warning";
+function buildUsageStatus(args: { usedFraction?: number; explicitlyAllowed: boolean }): UsageLimit["status"] {
+	if (args.usedFraction === undefined) return "unknown";
+	if (args.usedFraction >= 1) return args.explicitlyAllowed ? "warning" : "exhausted";
+	if (args.usedFraction >= 0.9) return "warning";
 	return "ok";
 }
 
@@ -276,6 +275,8 @@ function buildUsageLimit(args: {
 	window: ParsedUsageWindow;
 	accountId?: string;
 	planType?: string;
+	allowed?: boolean;
+	limitReached?: boolean;
 	nowMs: number;
 }): UsageLimit {
 	const usageWindow = buildUsageWindow(args.window, args.key, args.nowMs);
@@ -290,16 +291,14 @@ function buildUsageLimit(args: {
 		},
 		window: usageWindow,
 		amount,
-		// Each chat window's status reflects ONLY its own usage. The account-level
-		// `rate_limit.limit_reached` flag is intentionally not applied here: Codex
-		// returns a single shared flag for the whole account, so threading it into
-		// both the primary (5h) and secondary (weekly) windows marked a window with
-		// real headroom `exhausted` purely because a different window (or a separate
-		// metered feature) was at its limit, which over-blocked sibling accounts
-		// during credential selection. `usedFraction >= 1` already marks a window
-		// that is genuinely full; a real enforced limit not reflected in
-		// `used_percent` is caught when the live request returns usage_limit_reached.
-		status: buildUsageStatus(amount.usedFraction),
+		// The shared account-level rejection flag cannot identify which window
+		// is binding, but an explicit positive verdict applies to both windows.
+		// Preserve 100% as a warning when Codex still allows requests; live
+		// usage_limit_reached responses remain authoritative for blocking.
+		status: buildUsageStatus({
+			usedFraction: amount.usedFraction,
+			explicitlyAllowed: args.allowed === true && args.limitReached === false,
+		}),
 	};
 }
 function additionalLimitSlug(args: { limitName?: string; meteredFeature?: string }): string {
@@ -331,6 +330,8 @@ function buildAdditionalUsageLimit(args: {
 	accountId?: string;
 	limitName?: string;
 	meteredFeature?: string;
+	allowed?: boolean;
+	limitReached?: boolean;
 	nowMs: number;
 }): UsageLimit {
 	const usageWindow = buildUsageWindow(args.window, args.key, args.nowMs);
@@ -348,10 +349,12 @@ function buildAdditionalUsageLimit(args: {
 		},
 		window: usageWindow,
 		amount,
-		// The additional meter exposes one account-level flag for both windows.
-		// Status must follow this window's own usage or a full weekly meter marks
-		// the shorter window exhausted and schedules a premature retry.
-		status: buildUsageStatus(amount.usedFraction),
+		// A positive meter verdict is authoritative even when the advisory
+		// percentage rounds to 100; negative shared verdicts remain window-local.
+		status: buildUsageStatus({
+			usedFraction: amount.usedFraction,
+			explicitlyAllowed: args.allowed === true && args.limitReached === false,
+		}),
 	};
 }
 
@@ -449,6 +452,8 @@ export const openaiCodexUsageProvider: UsageProvider = {
 					window: parsed.primary,
 					accountId,
 					planType,
+					allowed: parsed.allowed,
+					limitReached: parsed.limitReached,
 					nowMs,
 				}),
 			);
@@ -460,6 +465,8 @@ export const openaiCodexUsageProvider: UsageProvider = {
 					window: parsed.secondary,
 					accountId,
 					planType,
+					allowed: parsed.allowed,
+					limitReached: parsed.limitReached,
 					nowMs,
 				}),
 			);
@@ -478,6 +485,8 @@ export const openaiCodexUsageProvider: UsageProvider = {
 						accountId,
 						limitName: extra.limitName,
 						meteredFeature: extra.meteredFeature,
+						allowed: extra.allowed,
+						limitReached: extra.limitReached,
 						nowMs,
 					}),
 				);
@@ -492,6 +501,8 @@ export const openaiCodexUsageProvider: UsageProvider = {
 						accountId,
 						limitName: extra.limitName,
 						meteredFeature: extra.meteredFeature,
+						allowed: extra.allowed,
+						limitReached: extra.limitReached,
 						nowMs,
 					}),
 				);

@@ -466,6 +466,56 @@ describe("Markdown component", () => {
 			}
 		});
 
+		it("does not leak inline-code color into table borders when cells wrap", () => {
+			const markdown = new Markdown(
+				`| Command | Notes |
+| --- | --- |
+| \`config.setupgrading(pendingRequests, emptyFlag)\` | plain |
+| short | other |`,
+				0,
+				0,
+				defaultMarkdownTheme,
+			);
+
+			// Narrow enough to force the long codespan to wrap mid-run.
+			const lines = markdown.render(24);
+			const joinedOutput = lines.join("\n");
+			expect(joinedOutput.includes("\x1b[33m"), "Inline code should be styled (yellow)").toBeTruthy();
+			expect(lines.filter(line => line.includes("|")).length).toBeGreaterThan(3);
+
+			// Walk SGR state through every table row: the "|" border glyphs (and
+			// everything after them on the line) must never be rendered under an
+			// open fg color or bold attribute.
+			for (const line of lines) {
+				if (!line.includes("|")) continue;
+				let bold = false;
+				let fgOpen = false;
+				let i = 0;
+				while (i < line.length) {
+					if (line[i] === "\x1b") {
+						const seq = line.slice(i).match(/^\x1b\[([0-9;]*)m/);
+						expect(seq, `unparseable SGR in: ${JSON.stringify(line)}`).not.toBeNull();
+						for (const p of seq![1]!.split(";")) {
+							if (p === "1") bold = true;
+							else if (p === "22") bold = false;
+							else if (p === "0") {
+								bold = false;
+								fgOpen = false;
+							} else if (p === "39") fgOpen = false;
+							else if (p === "38" || /^3[0-7]$/.test(p) || /^9[0-7]$/.test(p)) fgOpen = true;
+						}
+						i += seq![0].length;
+						continue;
+					}
+					if (line[i] === "|") {
+						expect(fgOpen, `Border inherits fg color in: ${JSON.stringify(line)}`).toBe(false);
+						expect(bold, `Border inherits bold in: ${JSON.stringify(line)}`).toBe(false);
+					}
+					i++;
+				}
+			}
+		});
+
 		it("should handle extremely narrow width gracefully", () => {
 			const markdown = new Markdown(
 				`| A | B | C |

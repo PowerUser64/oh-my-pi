@@ -12,7 +12,7 @@ This document covers the current extension runtime in:
 
 For discovery paths and filesystem loading rules, see [`extension-loading.md`](./extension-loading.md).
 
-For packaged user-facing extension CLIs/features such as `packages/swarm-extension`, see [`user-facing-packages.md`](./user-facing-packages.md).
+For packaged user-facing extension CLIs/features, see [`user-facing-packages.md`](./user-facing-packages.md).
 
 ## What an extension is
 

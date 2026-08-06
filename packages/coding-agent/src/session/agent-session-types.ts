@@ -92,6 +92,14 @@ export interface UsageFallbackConfirmation {
 	remainingPercent: number | undefined;
 }
 
+/**
+ * Confirms whether a reserve-triggered model fallback may proceed.
+ *
+ * Interactive callers use the confirmation details to present the pending
+ * route change; aborting `signal` cancels that pending confirmation.
+ */
+export type UsageFallbackConfirmer = (confirmation: UsageFallbackConfirmation, signal: AbortSignal) => Promise<boolean>;
+
 /** Identifies a retry fallback chain already entered during startup model resolution. */
 export interface InitialRetryFallbackState {
 	/** Role whose configured primary was unavailable. */

@@ -88,6 +88,8 @@ export interface CleanupStaleNativeVersionsInput {
 
 export function cleanupStaleNativeVersions(input: CleanupStaleNativeVersionsInput): string[];
 
+export function prepareNativeVersionDir(versionedDir: string): void;
+
 export interface ExtractEmbeddedAddonArchiveInput {
 	archivePath: string;
 	files: EmbeddedAddonFile[];

@@ -2172,6 +2172,80 @@ providers:
 		expect(unknown?.reasoning).toBe(false);
 	});
 
+	test("openai-models-list discovery reads server-advertised input modalities for ids absent from the catalog", async () => {
+		writeRawModelsJson({
+			"openai-test": {
+				baseUrl: "http://127.0.0.1:9996",
+				api: "openai-completions",
+				auth: "none",
+				discovery: { type: "openai-models-list" },
+			},
+		});
+		const fetchMock: FetchImpl = async input => {
+			const url = String(input);
+			if (url === "http://127.0.0.1:9996/v1/models") {
+				// Custom virtual tier ids that are absent from the bundled
+				// catalog: their vision support can only come from the server row.
+				return new Response(
+					JSON.stringify({
+						data: [
+							{ id: "high", object: "model", input: ["text", "image"] },
+							{ id: "leftover", object: "model", architecture: { input_modalities: ["text", "image"] } },
+							{ id: "synthetic-tier", object: "model", input_modalities: ["text", "image"] },
+							{ id: "low", object: "model", input: ["text"] },
+							{ id: "medium", object: "model" },
+						],
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			throw new Error(`Unexpected URL: ${url}`);
+		};
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+		await registry.refresh();
+		// Direct `input`, top-level `input_modalities`, and OpenRouter-style
+		// `architecture.input_modalities` all surface vision support.
+		expect(registry.find("openai-test", "high")?.input).toEqual(["text", "image"]);
+		expect(registry.find("openai-test", "leftover")?.input).toEqual(["text", "image"]);
+		expect(registry.find("openai-test", "synthetic-tier")?.input).toEqual(["text", "image"]);
+		// Server explicitly reports text-only; no image support invented.
+		expect(registry.find("openai-test", "low")?.input).toEqual(["text"]);
+		// Silent server → default text-only fallback.
+		expect(registry.find("openai-test", "medium")?.input).toEqual(["text"]);
+	});
+
+	test("lm-studio discovery keeps native VLM modalities over a thin OpenAI row", async () => {
+		writeRawModelsJson({
+			"lm-studio-test": {
+				baseUrl: "http://127.0.0.1:9995",
+				api: "openai-completions",
+				auth: "none",
+				discovery: { type: "lm-studio" },
+			},
+		});
+		const fetchMock: FetchImpl = async input => {
+			const url = String(input);
+			if (url === "http://127.0.0.1:9995/v1/models") {
+				return new Response(JSON.stringify({ data: [{ id: "local-vlm", object: "model", input: ["text"] }] }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			if (url === "http://127.0.0.1:9995/api/v0/models") {
+				return new Response(
+					JSON.stringify({
+						data: [{ id: "local-vlm", type: "vlm", capabilities: ["vision"], state: "loaded" }],
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			throw new Error(`Unexpected URL: ${url}`);
+		};
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+		await registry.refresh();
+		expect(registry.find("lm-studio-test", "local-vlm")?.input).toEqual(["text", "image"]);
+	});
+
 	test("proxy discovery honors API-reported context_length and endpoint routing", async () => {
 		writeRawModelsJson({
 			"proxy-test": {

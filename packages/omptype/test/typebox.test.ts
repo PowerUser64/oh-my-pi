@@ -56,6 +56,22 @@ describe("TypeBox adapter", () => {
 		expect(valid(exclusive, 1)).toBe(false);
 		expect(valid(exclusive, 3)).toBe(false);
 		expect(exclusive.toJsonSchema()).toEqual({ type: "number", exclusiveMinimum: 1, exclusiveMaximum: 3 });
+
+		const minOnly = Type.Integer({ minimum: 1 });
+		expect(valid(minOnly, 1)).toBe(true);
+		expect(valid(minOnly, 0)).toBe(false);
+		expect(valid(minOnly, 1.5)).toBe(false);
+		expect(minOnly.toJsonSchema()).toEqual({ type: "integer", minimum: 1 });
+		const exclusiveMinOnly = Type.Number({ exclusiveMinimum: 0 });
+		expect(valid(exclusiveMinOnly, 0)).toBe(false);
+		expect(valid(exclusiveMinOnly, 0.5)).toBe(true);
+		const maxOnly = Type.Number({ maximum: 5 });
+		expect(valid(maxOnly, 5)).toBe(true);
+		expect(valid(maxOnly, 6)).toBe(false);
+		const minWithMultiple = Type.Integer({ minimum: 1, multipleOf: 2 });
+		expect(valid(minWithMultiple, 4)).toBe(true);
+		expect(valid(minWithMultiple, 3)).toBe(false);
+		expect(valid(minWithMultiple, 0)).toBe(false);
 	});
 
 	test("arrays, tuples, objects, records and intersections validate", () => {

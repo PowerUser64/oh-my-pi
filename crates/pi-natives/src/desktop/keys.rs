@@ -237,14 +237,14 @@ pub fn parse_modifiers(mods: &[String]) -> CoreResult<Modifiers> {
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum KeyDirection {
+pub enum KeyDirection {
 	Press,
 	Release,
 	Click,
 }
 
 #[cfg(test)]
-pub(crate) fn execute_chord_with<E>(
+pub fn execute_chord_with<E>(
 	keys: &[KeyName],
 	mut emit: impl FnMut(KeyName, KeyDirection) -> Result<(), E>,
 ) -> Result<(), E> {
@@ -263,10 +263,10 @@ pub(crate) fn execute_chord_with<E>(
 	}
 	let mut first_error = None;
 	for &key in pressed.iter().rev() {
-		if let Err(error) = emit(key, KeyDirection::Release) {
-			if first_error.is_none() {
-				first_error = Some(error);
-			}
+		if let Err(error) = emit(key, KeyDirection::Release)
+			&& first_error.is_none()
+		{
+			first_error = Some(error);
 		}
 	}
 	first_error.map_or(Ok(()), Err)

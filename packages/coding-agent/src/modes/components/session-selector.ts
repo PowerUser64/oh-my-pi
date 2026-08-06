@@ -905,7 +905,7 @@ export class SessionSelectorComponent extends Container {
 	 * is mounted the list is detached from the child tree, so Container's
 	 * child-walking dispose would miss its pending history-merge timer.
 	 */
-	dispose(): void {
+	override dispose(): void {
 		this.#sessionList.dispose();
 		super.dispose();
 	}
@@ -971,7 +971,7 @@ export class SessionSelectorComponent extends Container {
 	 * footer is always visible and never drifts as the list window resizes. The
 	 * in-editor selector just appends the footer directly.
 	 */
-	render(width: number): readonly string[] {
+	override render(width: number): readonly string[] {
 		const lines: string[] = [];
 		for (const child of this.children) {
 			const childLines = child.render(width);

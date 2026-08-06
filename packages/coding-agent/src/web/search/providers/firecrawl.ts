@@ -203,7 +203,7 @@ export class FirecrawlProvider extends SearchProvider {
 	 * Firecrawl supports keyless mode, so an explicit user selection
 	 * (`webSearch: firecrawl`) works without any credential configured.
 	 */
-	isExplicitlyAvailable(_authStorage: AuthStorage): boolean {
+	override isExplicitlyAvailable(_authStorage: AuthStorage): boolean {
 		return true;
 	}
 

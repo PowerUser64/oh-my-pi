@@ -973,7 +973,7 @@ export class PerplexityProvider extends SearchProvider {
 	 * configured provider keeps priority over the anonymous/OpenRouter
 	 * fallbacks.
 	 */
-	isExplicitlyAvailable(_authStorage: AuthStorage): boolean {
+	override isExplicitlyAvailable(_authStorage: AuthStorage): boolean {
 		return true;
 	}
 
