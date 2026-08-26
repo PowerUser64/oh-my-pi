@@ -91,7 +91,7 @@ export function withReplaySafeStreamRetry<M, O extends StreamRetryOptions>(
 	context: Context,
 	options: O | undefined,
 	attempt: (model: M, context: Context, options?: O) => AssistantMessageEventStream,
-	policy: ReplaySafeStreamRetryPolicy,
+	policy: ReplaySafeStreamRetryPolicy = {},
 ): AssistantMessageEventStream {
 	const outer = new AssistantMessageEventStream();
 	const signal = options?.signal;

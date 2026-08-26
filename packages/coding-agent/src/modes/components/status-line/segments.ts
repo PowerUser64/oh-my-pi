@@ -506,8 +506,8 @@ const contextPctSegment: StatusLineSegment = {
 						: color;
 			autoIcon = ` ${theme.fg(iconColor, theme.icon.auto)}`;
 		}
-		const text = theme.fg(color, formatContextUsage(pct, window, ctx.contextTokens));
-		const content = withIcon(theme.icon.context, `${text}${autoIcon}`);
+		const pctText = theme.fg(color, formatContextUsage(pct, window, ctx.contextTokens));
+		const content = withIcon(theme.icon.context, `${pctText}${autoIcon}`);
 
 		return { content, visible: true };
 	},
