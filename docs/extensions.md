@@ -289,7 +289,7 @@ Cancelable pre-events:
 
 - `input`
 - `before_agent_start`
-- `before_provider_request` (may replace provider request payload — the replacement is applied by every provider that fires the hook, which is all of them except `devin-agent`, which does not fire it)
+- `before_provider_request` (may replace provider request payload)
 - `after_provider_response`
 - `context`
 - `agent_start` / `agent_end` — agent loop lifecycle notification; `agent_end` remains notification-only
