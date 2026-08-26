@@ -1160,6 +1160,7 @@
 - Fixed the browser tool ignoring the url parameter when opening a new tab on an attached browser.
 - Fixed browser automation disrupting attached browsers by adopting the active foreground tab and avoiding raising new tabs during screenshots.
 
+- Added percent-escape format strings to `contextPct.format` in status line segment options. Use `%t` for used tokens, `%p` for percent used, `%w` for window size, and `%%` for a literal percent sign. Example: `"%t/%w"` renders as `"500K/1M"`.
 ## [17.2.1] - 2026-07-30
 
 ### Added

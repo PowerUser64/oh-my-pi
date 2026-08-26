@@ -486,6 +486,9 @@ const contextPctSegment: StatusLineSegment = {
 	render(ctx) {
 		const pct = ctx.contextPercent;
 		const window = ctx.contextWindow;
+		const format = ctx.options.contextPct?.format;
+
+		const text = sanitizeStatusText(formatContextUsage(pct, window, ctx.contextTokens, format));
 
 		const color = getContextUsageThemeColor(getContextUsageLevel(pct ?? 0, window));
 		// Async-compaction indicator: pulse the auto icon while a background
